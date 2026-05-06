@@ -36,7 +36,7 @@ namespace {
     std::string type;
     cJSON* json = parse_json(session, msg, type) ;
     if (json) {
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "(%u) processIncomingMessage - received %s message\n", tech_pvt->id, type.c_str());
+      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) processIncomingMessage - received %s message\n", tech_pvt->id, type.c_str());
       cJSON* jsonData = cJSON_GetObjectItem(json, "data");
       if (0 == type.compare("playAudio")) {
         if (jsonData) {
@@ -81,7 +81,7 @@ namespace {
           }
           else {
             validAudio = 0;
-            switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "(%u) processIncomingMessage - unsupported audioContentType: %s\n", tech_pvt->id, szAudioContentType);
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) processIncomingMessage - unsupported audioContentType: %s\n", tech_pvt->id, szAudioContentType);
           }
 
           if (validAudio) {
@@ -111,7 +111,7 @@ namespace {
           if (jsonAudio) cJSON_Delete(jsonAudio);
         }
         else {
-          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "(%u) processIncomingMessage - missing data payload in playAudio request\n", tech_pvt->id); 
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "(%u) processIncomingMessage - missing data payload in playAudio request\n", tech_pvt->id);
         }
       }
       else if (0 == type.compare("killAudio")) {
@@ -147,12 +147,12 @@ namespace {
         free(jsonString);
       }
       else {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "(%u) processIncomingMessage - unsupported msg type %s\n", tech_pvt->id, type.c_str());  
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "(%u) processIncomingMessage - unsupported msg type %s\n", tech_pvt->id, type.c_str());
       }
       cJSON_Delete(json);
     }
     else {
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "(%u) processIncomingMessage - could not parse message: %s\n", tech_pvt->id, message);
+      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) processIncomingMessage - could not parse message: %s\n", tech_pvt->id, message);
     }
   }
 
@@ -268,7 +268,18 @@ namespace {
   }
 
   void destroy_tech_pvt(private_t* tech_pvt) {
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "%s (%u) destroy_tech_pvt\n", tech_pvt->sessionId, tech_pvt->id);
+    /* destroy_tech_pvt is called from contexts where the
+     * switch_core_session_t* may already be in teardown (post-
+     * media-bug-detach), so we don't take it as a parameter and
+     * can't use SESSION_LOG. tech_pvt->sessionId is the channel
+     * UUID stashed at fork_session_init time and remains valid
+     * for the lifetime of the tech_pvt struct.
+     *
+     * Drop the leading "%s " from the format string — UUID_LOG
+     * prefixes the syslog line with the UUID via mod_syslog's
+     * "%s %s" handler, so leaving sessionId in the message text
+     * would double-prefix every line. */
+    switch_log_printf(SWITCH_CHANNEL_UUID_LOG(tech_pvt->sessionId), SWITCH_LOG_INFO, "(%u) destroy_tech_pvt\n", tech_pvt->id);
     if (tech_pvt->resampler) {
       speex_resampler_destroy(tech_pvt->resampler);
       tech_pvt->resampler = nullptr;
@@ -295,21 +306,20 @@ namespace {
 
 extern "C" {
   int parse_ws_uri(switch_channel_t *channel, const char* szServerUri, char* host, char *path, unsigned int* pPort, int* pSslFlags) {
-    int i = 0, offset;
+    int offset;
     char server[MAX_WS_URL_LEN + MAX_PATH_LEN];
-    char *saveptr;
     int flags = LCCSCF_USE_SSL;
     
     if (switch_true(switch_channel_get_variable(channel, "MOD_AUDIO_FORK_ALLOW_SELFSIGNED"))) {
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "parse_ws_uri - allowing self-signed certs\n");
+      switch_log_printf(SWITCH_CHANNEL_CHANNEL_LOG(channel), SWITCH_LOG_DEBUG, "parse_ws_uri - allowing self-signed certs\n");
       flags |= LCCSCF_ALLOW_SELFSIGNED;
     }
     if (switch_true(switch_channel_get_variable(channel, "MOD_AUDIO_FORK_SKIP_SERVER_CERT_HOSTNAME_CHECK"))) {
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "parse_ws_uri - skipping hostname check\n");
+      switch_log_printf(SWITCH_CHANNEL_CHANNEL_LOG(channel), SWITCH_LOG_DEBUG, "parse_ws_uri - skipping hostname check\n");
       flags |= LCCSCF_SKIP_SERVER_CERT_HOSTNAME_CHECK;
     }
     if (switch_true(switch_channel_get_variable(channel, "MOD_AUDIO_FORK_ALLOW_EXPIRED"))) {
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "parse_ws_uri - allowing expired certs\n");
+      switch_log_printf(SWITCH_CHANNEL_CHANNEL_LOG(channel), SWITCH_LOG_DEBUG, "parse_ws_uri - allowing expired certs\n");
       flags |= LCCSCF_ALLOW_EXPIRED;
     }
 
@@ -336,7 +346,7 @@ extern "C" {
       *pPort = 80;
     }
     else {
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "parse_ws_uri - error parsing uri %s: invalid scheme\n", szServerUri);;
+      switch_log_printf(SWITCH_CHANNEL_CHANNEL_LOG(channel), SWITCH_LOG_NOTICE, "parse_ws_uri - error parsing uri %s: invalid scheme\n", szServerUri);
       return 0;
     }
 
@@ -346,7 +356,7 @@ extern "C" {
     if(std::regex_search(strHost, matches, re)) {
       /*
       for (int i = 0; i < matches.length(); i++) {
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "parse_ws_uri - %d: %s\n", i, matches[i].str().c_str());
+        switch_log_printf(SWITCH_CHANNEL_CHANNEL_LOG(channel), SWITCH_LOG_NOTICE, "parse_ws_uri - %d: %s\n", i, matches[i].str().c_str());
       }
       */
       strncpy(host, matches[1].str().c_str(), MAX_WS_URL_LEN);
@@ -360,10 +370,10 @@ extern "C" {
         strcpy(path, "/");
       }
     } else {
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "parse_ws_uri - invalid format %s\n", strHost.c_str());
+      switch_log_printf(SWITCH_CHANNEL_CHANNEL_LOG(channel), SWITCH_LOG_NOTICE, "parse_ws_uri - invalid format %s\n", strHost.c_str());
       return 0;
     }
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "parse_ws_uri - host %s, path %s\n", host, path);
+    switch_log_printf(SWITCH_CHANNEL_CHANNEL_LOG(channel), SWITCH_LOG_DEBUG, "parse_ws_uri - host %s, path %s\n", host, path);
 
     return 1;
   }
@@ -398,11 +408,9 @@ extern "C" {
               int sslFlags,
               int channels,
               char *bugname,
-              char* metadata, 
+              char* metadata,
               void **ppUserData)
-  {    	
-    int err;
-
+  {
     // allocate per-session data structure
     private_t* tech_pvt = (private_t *) switch_core_session_alloc(session, sizeof(private_t));
     if (!tech_pvt) {
@@ -525,9 +533,6 @@ extern "C" {
 
   switch_bool_t fork_frame(switch_core_session_t *session, switch_media_bug_t *bug) {
     private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
-    size_t inuse = 0;
-    bool dirty = false;
-    char *p = (char *) "{\"msg\": \"buffer overrun\"}";
 
     if (!tech_pvt || tech_pvt->audio_paused || tech_pvt->graceful_shutdown) return SWITCH_TRUE;
     
@@ -570,7 +575,6 @@ extern "C" {
             pAudioPipe->binaryWritePtrAdd(frame.datalen);
             frame.buflen = available = pAudioPipe->binarySpaceAvailable();
             frame.data = pAudioPipe->binaryWritePtr();
-            dirty = true;
           }
         }
       }
@@ -595,7 +599,6 @@ extern "C" {
               size_t bytes_written = out_len << tech_pvt->channels;
               pAudioPipe->binaryWritePtrAdd(bytes_written);
               available = pAudioPipe->binarySpaceAvailable();
-              dirty = true;
             }
             if (available < pAudioPipe->binaryMinSpace()) {
               if (!tech_pvt->buffer_overrun_notified) {
