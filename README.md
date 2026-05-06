@@ -1,8 +1,15 @@
-**Please note: This repo is no longer being actively maintained.**
+**This fork (voicetel/drachtio-freeswitch-modules) is actively maintained by VoiceTel as of 2026-05.**
 
-**For those interested in similar modules, please refer to [this repo](https://github.com/jambonz/freeswitch-modules)  which is offered under a different (dual-licensing) scheme:**
+The upstream drachtio repo is in preservation mode. We picked up active
+maintenance for the modules we ship in production (primarily
+`mod_audio_fork`); patches against this fork are accepted via the
+voicetel/drachtio-freeswitch-modules tracker. Pull requests against
+upstream drachtio/drachtio-freeswitch-modules will not be answered.
 
-- **AGLP-3 for general usage.**
+For an alternative that is also actively maintained but under a different
+(dual-licensing) scheme, see [jambonz/freeswitch-modules](https://github.com/jambonz/freeswitch-modules):
+
+- **AGPL-3 for general usage.**
 - **MIT for use with [jambonz](https://jambonz.org) installs <ins>only</ins>.**
 
 # drachtio-freeswitch-modules
