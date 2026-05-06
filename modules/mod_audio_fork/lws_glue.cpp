@@ -306,9 +306,8 @@ namespace {
 
 extern "C" {
   int parse_ws_uri(switch_channel_t *channel, const char* szServerUri, char* host, char *path, unsigned int* pPort, int* pSslFlags) {
-    int i = 0, offset;
+    int offset;
     char server[MAX_WS_URL_LEN + MAX_PATH_LEN];
-    char *saveptr;
     int flags = LCCSCF_USE_SSL;
     
     if (switch_true(switch_channel_get_variable(channel, "MOD_AUDIO_FORK_ALLOW_SELFSIGNED"))) {
@@ -409,11 +408,9 @@ extern "C" {
               int sslFlags,
               int channels,
               char *bugname,
-              char* metadata, 
+              char* metadata,
               void **ppUserData)
-  {    	
-    int err;
-
+  {
     // allocate per-session data structure
     private_t* tech_pvt = (private_t *) switch_core_session_alloc(session, sizeof(private_t));
     if (!tech_pvt) {
@@ -536,9 +533,6 @@ extern "C" {
 
   switch_bool_t fork_frame(switch_core_session_t *session, switch_media_bug_t *bug) {
     private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
-    size_t inuse = 0;
-    bool dirty = false;
-    char *p = (char *) "{\"msg\": \"buffer overrun\"}";
 
     if (!tech_pvt || tech_pvt->audio_paused || tech_pvt->graceful_shutdown) return SWITCH_TRUE;
     
@@ -581,7 +575,6 @@ extern "C" {
             pAudioPipe->binaryWritePtrAdd(frame.datalen);
             frame.buflen = available = pAudioPipe->binarySpaceAvailable();
             frame.data = pAudioPipe->binaryWritePtr();
-            dirty = true;
           }
         }
       }
@@ -606,7 +599,6 @@ extern "C" {
               size_t bytes_written = out_len << tech_pvt->channels;
               pAudioPipe->binaryWritePtrAdd(bytes_written);
               available = pAudioPipe->binarySpaceAvailable();
-              dirty = true;
             }
             if (available < pAudioPipe->binaryMinSpace()) {
               if (!tech_pvt->buffer_overrun_notified) {
