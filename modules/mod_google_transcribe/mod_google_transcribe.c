@@ -103,7 +103,7 @@ static void responseHandler(switch_core_session_t* session, const char * json, c
     if (!error) {
     		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_RESULTS);
     }
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "%s json payload: %s.\n", bugname ? bugname : "google_transcribe", json);
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "%s json payload: %s.\n", bugname ? bugname : "google_transcribe", json);
 		if (!event) {
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "failed to create event subclass %s\n",
 				error ? TRANSCRIBE_EVENT_ERROR : TRANSCRIBE_EVENT_RESULTS);
@@ -472,6 +472,10 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_transcribe_load)
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_PLAY_INTERRUPT);
 		return SWITCH_STATUS_TERM;
 	}
+	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_VAD_DETECTED) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_VAD_DETECTED);
+		return SWITCH_STATUS_TERM;
+	}
 
 	/* connect my internal structure to the blank pointer passed to me */
 	*module_interface = switch_loadable_module_create_module_interface(pool, modname);
@@ -506,6 +510,7 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_transcribe_shutdown)
 	switch_event_free_subclass(TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_PLAY_INTERRUPT);
+	switch_event_free_subclass(TRANSCRIBE_EVENT_VAD_DETECTED);
 	return SWITCH_STATUS_SUCCESS;
 }
 

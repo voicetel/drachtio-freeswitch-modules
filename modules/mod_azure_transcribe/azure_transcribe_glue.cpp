@@ -4,6 +4,7 @@
 #include <switch_json.h>
 
 #include <string.h>
+#include <atomic>
 #include <mutex>
 #include <thread>
 #include <condition_variable>
@@ -17,6 +18,7 @@
 #include "mod_azure_transcribe.h"
 #include "simple_buffer.h"
 
+/* bytes in one 20ms frame of 8kHz 16-bit mono PCM (160 samples * 2 bytes) */
 #define CHUNKSIZE (320)
 #define DEFAULT_SPEECH_TIMEOUT "180000"
 
@@ -25,8 +27,26 @@ using namespace Microsoft::CognitiveServices::Speech::Audio;
 
 const char ALLOC_TAG[] = "drachtio";
 
+/* RAII wrapper around switch_core_session_locate/rwunlock so the session
+   read-lock is always released, including on the exception paths in the
+   SDK event callbacks. */
+class SessionLock {
+public:
+	explicit SessionLock(const char* sessionId) : m_session(switch_core_session_locate(sessionId)) {}
+	~SessionLock() { if (m_session) switch_core_session_rwunlock(m_session); }
+	SessionLock(const SessionLock&) = delete;
+	SessionLock& operator=(const SessionLock&) = delete;
+	switch_core_session_t* get() const { return m_session; }
+	explicit operator bool() const { return m_session != nullptr; }
+private:
+	switch_core_session_t* m_session;
+};
+
 static bool hasDefaultCredentials = false;
-static bool sdkInitialized = false;
+/* process-global one-shot: the SDK log filename is applied by the first
+   recognizer constructed; std::call_once makes the flip race-free across
+   concurrently constructed sessions */
+static std::once_flag sdkInitFlag;
 static const char* sdkLog = std::getenv("AZURE_SDK_LOGFILE");
 static const char* proxyIP = std::getenv("JAMBONES_HTTP_PROXY_IP");
 static const char* proxyPort = std::getenv("JAMBONES_HTTP_PROXY_PORT");
@@ -46,7 +66,7 @@ public:
 		const char* subscriptionKey, 
 		responseHandler_t responseHandler
   ) : m_sessionId(sessionId), m_bugname(bugname), m_finished(false), m_stopped(false), m_interim(interim), 
-	 m_connected(false), m_connecting(false), m_audioBuffer(320 * (samples_per_second == 8000 ? 1 : 2), 15),
+	 m_connected(false), m_connecting(false), m_audioBuffer(CHUNKSIZE, 15),
 	m_responseHandler(responseHandler) {
 
 		switch_core_session_t* psession = switch_core_session_locate(sessionId);
@@ -75,9 +95,10 @@ public:
       switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_DEBUG, "setting endpoint id: %s\n", endpointId);
 			speechConfig->SetEndpointId(endpointId);
 		}
-		if (!sdkInitialized && sdkLog) {
-			sdkInitialized = true;
-			speechConfig->SetProperty(PropertyId::Speech_LogFilename, sdkLog);
+		if (sdkLog) {
+			std::call_once(sdkInitFlag, [&speechConfig]() {
+				speechConfig->SetProperty(PropertyId::Speech_LogFilename, sdkLog);
+			});
 		}
 		if (switch_true(switch_channel_get_variable(channel, "AZURE_AUDIO_LOGGING"))) {
 			speechConfig->EnableAudioLogging();
@@ -93,7 +114,7 @@ public:
 
     // alternative language
 		const char* var;
-    if (var = switch_channel_get_variable(channel, "AZURE_SPEECH_ALTERNATIVE_LANGUAGE_CODES")) {
+    if ((var = switch_channel_get_variable(channel, "AZURE_SPEECH_ALTERNATIVE_LANGUAGE_CODES"))) {
 			std::vector<std::string> languages;
 			char *alt_langs[3] = { 0 };
       int argc = switch_separate_string((char *) var, ',', alt_langs, 3);
@@ -157,12 +178,11 @@ public:
 		}
 
 		auto onSessionStopped = [this](const SessionEventArgs& args) {
-			switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
+			SessionLock lock(m_sessionId.c_str());
 			m_stopped = true;
-			if (psession) {
+			if (lock) {
 				auto sessionId = args.SessionId;
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer: got session stopped from microsoft\n");
-				switch_core_session_rwunlock(psession);
 			}
 		};
 		auto onSpeechStartDetected = [this, responseHandler](const RecognitionEventArgs& args) {
@@ -184,7 +204,8 @@ public:
 			}
 		};
 		auto onRecognitionEvent = [this, responseHandler](const SpeechRecognitionEventArgs& args) {
-			switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
+			SessionLock lock(m_sessionId.c_str());
+			switch_core_session_t* psession = lock.get();
 			if (psession) {
 				auto result = args.Result;
 				auto reason = result->Reason;
@@ -209,13 +230,13 @@ public:
 
 					break;
 				}
-				switch_core_session_rwunlock(psession);
 			}
 		};
 
 		auto onCanceled = [this, responseHandler](const SpeechRecognitionCanceledEventArgs& args) {
       if (m_finished) return;
-			switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
+			SessionLock lock(m_sessionId.c_str());
+			switch_core_session_t* psession = lock.get();
 			if (psession) {
         auto result = args.Result;
         auto details = args.ErrorDetails;
@@ -227,7 +248,6 @@ public:
         responseHandler(psession, TRANSCRIBE_EVENT_ERROR, jsonString, m_bugname.c_str(), m_finished);
         free(jsonString);
         cJSON_Delete(json);
-				switch_core_session_rwunlock(psession);
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer recognition canceled, error %d: %s\n", code, details.c_str());
       }
 		};
@@ -254,14 +274,14 @@ public:
 
 		auto onSessionStarted = [this](const SessionEventArgs& args) {
 			m_connected = true;
-			switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
-			if (psession) {
+			SessionLock lock(m_sessionId.c_str());
+			if (lock) {
 				auto sessionId = args.SessionId;
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer got session started from microsoft\n");
 
 				// send any buffered audio
 				int nFrames = m_audioBuffer.getNumItems();
-				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got session started from azure, %d buffered frames\n", this, nFrames);	
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got session started from azure, %d buffered frames\n", this, nFrames);
 				if (nFrames) {
 					char *p;
 					do {
@@ -271,7 +291,6 @@ public:
 						}
 					} while (p);
 				}
-				switch_core_session_rwunlock(psession);
 			}
 		};
 		m_recognizer->SessionStarted += onSessionStarted;
@@ -291,7 +310,19 @@ public:
       return true;
     }
 
-    m_pushStream->Write(static_cast<uint8_t*>(data), datalen);
+    try {
+      m_pushStream->Write(static_cast<uint8_t*>(data), datalen);
+    } catch (const std::exception& e) {
+      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+        "GStreamer::write %p exception writing to push stream: %s\n", this, e.what());
+      m_finished = true;
+      return false;
+    } catch (...) {
+      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+        "GStreamer::write %p unknown exception writing to push stream\n", this);
+      m_finished = true;
+      return false;
+    }
 		return true;
 	}
 
@@ -320,10 +351,11 @@ private:
 
 	responseHandler_t m_responseHandler;
 	bool m_interim;
-	bool m_finished;
-	bool m_connected;
-	bool m_connecting;
-	bool m_stopped;
+	/* written from SDK callback threads, read from the media thread */
+	std::atomic<bool> m_finished;
+	std::atomic<bool> m_connected;
+	std::atomic<bool> m_connecting;
+	std::atomic<bool> m_stopped;
 	SimpleBuffer m_audioBuffer;
 };
 
@@ -448,16 +480,16 @@ extern "C" {
 				int voice_ms = 250;
 				int debug = 0;
 
-				if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_MODE")) {
+				if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_MODE"))) {
 					mode = atoi(var);
 				}
-				if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_SILENCE_MS")) {
+				if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_SILENCE_MS"))) {
 					silence_ms = atoi(var);
 				}
-				if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_VOICE_MS")) {
+				if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_VOICE_MS"))) {
 					voice_ms = atoi(var);
 				}
-				if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_DEBUG")) {
+				if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_DEBUG"))) {
 					debug = atoi(var);
 				}
 				switch_vad_set_mode(cb->vad, mode);
@@ -541,8 +573,9 @@ extern "C" {
 						}
 
 						if (cb->resampler) {
-							spx_int16_t out[SWITCH_RECOMMENDED_BUFFER_SIZE];
-							spx_uint32_t out_len = SWITCH_RECOMMENDED_BUFFER_SIZE;
+							/* out[] is an array of int16 samples, so size it in sample units, not bytes */
+							spx_int16_t out[SWITCH_RECOMMENDED_BUFFER_SIZE / 2];
+							spx_uint32_t out_len = SWITCH_RECOMMENDED_BUFFER_SIZE / 2;
 							spx_uint32_t in_len = frame.samples;
 							size_t written;
 						

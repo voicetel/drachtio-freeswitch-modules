@@ -71,7 +71,7 @@ static void responseHandler(switch_core_session_t* session, const char * json, c
     			return;
     		}
     }
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "json payload: %s.\n", json);
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "json payload: %s.\n", json);
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "aws");
 		switch_event_add_body(event, "%s", json);
@@ -225,9 +225,25 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_aws_transcribe_load)
 {
 	switch_api_interface_t *api_interface;
 
-	/* create/register custom event message type */
+	/* create/register custom event message types */
 	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_RESULTS) != SWITCH_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_RESULTS);
+		return SWITCH_STATUS_TERM;
+	}
+	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_END_OF_TRANSCRIPT) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_END_OF_TRANSCRIPT);
+		return SWITCH_STATUS_TERM;
+	}
+	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_NO_AUDIO_DETECTED) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
+		return SWITCH_STATUS_TERM;
+	}
+	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
+		return SWITCH_STATUS_TERM;
+	}
+	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_VAD_DETECTED) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_VAD_DETECTED);
 		return SWITCH_STATUS_TERM;
 	}
 
@@ -257,5 +273,9 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_aws_transcribe_shutdown)
 {
 	aws_transcribe_cleanup();
 	switch_event_free_subclass(TRANSCRIBE_EVENT_RESULTS);
+	switch_event_free_subclass(TRANSCRIBE_EVENT_END_OF_TRANSCRIPT);
+	switch_event_free_subclass(TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
+	switch_event_free_subclass(TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
+	switch_event_free_subclass(TRANSCRIBE_EVENT_VAD_DETECTED);
 	return SWITCH_STATUS_SUCCESS;
 }

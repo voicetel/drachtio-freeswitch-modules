@@ -4,6 +4,7 @@
 #include <switch_json.h>
 
 #include <string.h>
+#include <atomic>
 #include <mutex>
 #include <thread>
 #include <condition_variable>
@@ -23,7 +24,7 @@
 #include "mod_aws_transcribe.h"
 #include "simple_buffer.h"
 
-#define BUFFER_SECS (3)
+/* one audio chunk = 320 bytes = 160 samples (20ms) of 16-bit mono PCM at 8kHz */
 #define CHUNKSIZE (320)
 
 using namespace Aws;
@@ -36,6 +37,20 @@ using namespace Aws::TranscribeStreamingService::Model;
 const char ALLOC_TAG[] = "drachtio";
 
 static bool hasDefaultCredentials = false;
+
+/* RAII wrapper around switch_core_session_locate/switch_core_session_rwunlock so the
+   read-lock is always released on every exit path (early return, exception, scope end). */
+class SessionLock {
+public:
+	explicit SessionLock(const char* sessionId) : m_session(switch_core_session_locate(sessionId)) {}
+	~SessionLock() { if (m_session) switch_core_session_rwunlock(m_session); }
+	SessionLock(const SessionLock&) = delete;
+	SessionLock& operator=(const SessionLock&) = delete;
+	switch_core_session_t* get() const { return m_session; }
+	explicit operator bool() const { return m_session != nullptr; }
+private:
+	switch_core_session_t* m_session;
+};
 
 class GStreamer {
 public:
@@ -51,8 +66,9 @@ public:
 		const char* awsSecretAccessKey,
 		responseHandler_t responseHandler
   ) : m_sessionId(sessionId), m_bugname(bugname), m_finished(false), m_interim(interim), m_finishing(false), m_connected(false), m_connecting(false),
-	 		m_packets(0), m_responseHandler(responseHandler), m_pStream(nullptr), 
-			m_audioBuffer(320 * (samples_per_second == 8000 ? 1 : 2), 15) {
+	 		m_packets(0), m_responseHandler(responseHandler), m_pStream(nullptr),
+			/* prebuffer up to 15 chunks (CHUNKSIZE bytes for 8kHz, 2x for resampled 16kHz) until the stream is connected */
+			m_audioBuffer(CHUNKSIZE * (samples_per_second == 8000 ? 1 : 2), 15) {
 		Aws::String key(awsAccessKeyId);
 		Aws::String secret(awsSecretAccessKey);
 		Aws::Client::ClientConfiguration config;
@@ -73,14 +89,11 @@ public:
 	
     m_handler.SetTranscriptEventCallback([this](const TranscriptEvent& ev)
     {
-			switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
+			SessionLock psession(m_sessionId.c_str());
 			if (psession) {
-				switch_channel_t* channel = switch_core_session_get_channel(psession);
 				std::lock_guard<std::mutex> lk(m_mutex);
 				m_transcript = ev;
 				m_cond.notify_one();
-
-				switch_core_session_rwunlock(psession);
 			}
     });
 
@@ -92,26 +105,25 @@ public:
 		if (channels > 1) m_request.SetNumberOfChannels(channels);
 
 		const char* var;
-		switch_core_session_t* session = switch_core_session_locate(sessionId);
+		SessionLock session(sessionId);
 		if (session) {
-			switch_channel_t *channel = switch_core_session_get_channel(session);
+			switch_channel_t *channel = switch_core_session_get_channel(session.get());
 
-			if (var = switch_channel_get_variable(channel, "AWS_SHOW_SPEAKER_LABEL")) {
+			if (switch_channel_get_variable(channel, "AWS_SHOW_SPEAKER_LABEL")) {
 				m_request.SetShowSpeakerLabel(true);
 			}
-			if (var = switch_channel_get_variable(channel, "AWS_ENABLE_CHANNEL_IDENTIFICATION")) {
+			if (switch_channel_get_variable(channel, "AWS_ENABLE_CHANNEL_IDENTIFICATION")) {
 				m_request.SetEnableChannelIdentification(true);
 			}
-			if (var = switch_channel_get_variable(channel, "AWS_VOCABULARY_NAME")) {
+			if ((var = switch_channel_get_variable(channel, "AWS_VOCABULARY_NAME"))) {
 				m_request.SetVocabularyName(var);
 			}
-			if (var = switch_channel_get_variable(channel, "AWS_VOCABULARY_FILTER_NAME")) {
+			if ((var = switch_channel_get_variable(channel, "AWS_VOCABULARY_FILTER_NAME"))) {
 				m_request.SetVocabularyFilterName(var);
 			}
-			if (var = switch_channel_get_variable(channel, "AWS_VOCABULARY_FILTER_METHOD")) {
+			if ((var = switch_channel_get_variable(channel, "AWS_VOCABULARY_FILTER_METHOD"))) {
 				m_request.SetVocabularyFilterMethod(VocabularyFilterMethodMapper::GetVocabularyFilterMethodForName(var));
 			}
-			switch_core_session_rwunlock(session);
 		}
 	}
 
@@ -123,17 +135,15 @@ public:
 
     auto OnStreamReady = [this](Model::AudioStream& stream)
     {
-			switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
+			SessionLock psession(m_sessionId.c_str());
 			if (psession) {
-				switch_channel_t* channel = switch_core_session_get_channel(psession);
-
 				m_pStream = &stream;
 				m_connected = true;
 
 
 				// send any buffered audio
 				int nFrames = m_audioBuffer.getNumItems();
-				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got stream ready, %d buffered frames\n", this, nFrames);	
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got stream ready, %d buffered frames\n", this, nFrames);
 				if (nFrames) {
 					char *p;
 					do {
@@ -143,8 +153,6 @@ public:
 						}
 					} while (p);
 				}
-	
-				switch_core_session_rwunlock(psession);
 			}
     };
     auto OnResponseCallback = [this](const TranscribeStreamingServiceClient* pClient, 
@@ -153,9 +161,9 @@ public:
 			const std::shared_ptr<const Aws::Client::AsyncCallerContext>& context)
     {
  			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p stream got final response\n", this);
-			switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
+			SessionLock psession(m_sessionId.c_str());
 			if (psession) {
-				if (!outcome.IsSuccess()) {				
+				if (!outcome.IsSuccess()) {
 					const TranscribeStreamingServiceError& err = outcome.GetError();
 					auto message = err.GetMessage();
 					auto exception = err.GetExceptionName();
@@ -163,7 +171,7 @@ public:
 					cJSON_AddStringToObject(json, "type", "error");
 					cJSON_AddStringToObject(json, "error", message.c_str());
 					char* jsonString = cJSON_PrintUnformatted(json);
-					m_responseHandler(psession, jsonString, m_bugname.c_str());
+					m_responseHandler(psession.get(), jsonString, m_bugname.c_str());
 					free(jsonString);
 					cJSON_Delete(json);
 					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p stream got error response %s : %s\n", this, message.c_str(), exception.c_str());
@@ -172,8 +180,6 @@ public:
 				std::lock_guard<std::mutex> lk(m_mutex);
 				m_finished = true;
 				m_cond.notify_one();
-
-				switch_core_session_rwunlock(psession);
 			} else {
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p session is closed/hungup. Need to unblock thread.\n", this);
 				std::lock_guard<std::mutex> lk(m_mutex);
@@ -238,36 +244,35 @@ public:
 			if (m_finished || !m_connected) return;
 
 			if (m_transcript.TranscriptHasBeenSet()) {
-				switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
+				SessionLock psession(m_sessionId.c_str());
 				if (psession) {
 
 					//switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::got a transcript to send out %p\n", this);
 					bool isFinal = false;
-					std::ostringstream s;
-					s << "[";
+					/* build the transcript JSON via cJSON so transcript text is correctly escaped;
+					   shape is unchanged: [ {"is_final": <bool>, "alternatives": [ {"transcript": "<text>"} ]} ] */
+					cJSON* root = cJSON_CreateArray();
 					for (auto&& r : m_transcript.GetTranscript().GetResults()) {
-						int count = 0;
-						std::ostringstream t1;
 						if (!isFinal && !r.GetIsPartial()) isFinal = true;
-						t1 << "{\"is_final\": " << (r.GetIsPartial() ? "false" : "true") << ", \"alternatives\": [";
+						cJSON* result = cJSON_CreateObject();
+						cJSON_AddBoolToObject(result, "is_final", r.GetIsPartial() ? false : true);
+						cJSON* alternatives = cJSON_AddArrayToObject(result, "alternatives");
 						for (auto&& alt : r.GetAlternatives()) {
-							std::ostringstream t2;
-							if (count++ == 0) t2 << "{\"transcript\": \"" << alt.GetTranscript() << "\"}";
-							else t2 << ", {\"transcript\": \"" << alt.GetTranscript() << "\"}";
-							t1 << t2.str();
+							cJSON* alternative = cJSON_CreateObject();
+							cJSON_AddStringToObject(alternative, "transcript", alt.GetTranscript().c_str());
+							cJSON_AddItemToArray(alternatives, alternative);
 						}
-						t1 << "]}";
-						s << t1.str();
+						cJSON_AddItemToArray(root, result);
 					}
-					s << "]";
-					if (0 != s.str().compare("[]") && (isFinal || m_interim)) {
-						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::writing transcript %p: %s\n", this, s.str().c_str() );
-						m_responseHandler(psession, s.str().c_str(), m_bugname.c_str());
+					char* jsonString = cJSON_PrintUnformatted(root);
+					if (jsonString && 0 != strcmp(jsonString, "[]") && (isFinal || m_interim)) {
+						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::writing transcript %p: %s\n", this, jsonString);
+						m_responseHandler(psession.get(), jsonString, m_bugname.c_str());
 					}
+					if (jsonString) free(jsonString);
+					cJSON_Delete(root);
 					TranscriptEvent empty;
-					m_transcript = empty; 
-
-					switch_core_session_rwunlock(psession);
+					m_transcript = empty;
 				}
 			}
 			if (m_finishing) {
@@ -306,11 +311,11 @@ private:
 	StartStreamTranscriptionHandler m_handler;
 	TranscriptEvent m_transcript;
 	responseHandler_t m_responseHandler;
-	bool m_finishing;
+	std::atomic<bool> m_finishing;
 	bool m_interim;
-	bool m_finished;
-	bool m_connected;
-	bool m_connecting;
+	std::atomic<bool> m_finished;
+	std::atomic<bool> m_connected;
+	std::atomic<bool> m_connecting;
 	uint32_t m_packets;
 	std::mutex m_mutex;
 	std::condition_variable m_cond;
@@ -322,12 +327,9 @@ static void *SWITCH_THREAD_FUNC aws_transcribe_thread(switch_thread_t *thread, v
 	struct cap_cb *cb = (struct cap_cb *) obj;
 	bool ok = true;
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcribe_thread: starting cb %p\n", (void *) cb);
-	GStreamer* pStreamer = new GStreamer(cb->sessionId, cb->bugname, cb->channels, cb->lang, cb->interim, cb->samples_per_second, cb->region, cb->awsAccessKeyId, cb->awsSecretAccessKey, 
+	/* new throws std::bad_alloc on failure (never returns null), so no null-check is needed here */
+	GStreamer* pStreamer = new GStreamer(cb->sessionId, cb->bugname, cb->channels, cb->lang, cb->interim, cb->samples_per_second, cb->region, cb->awsAccessKeyId, cb->awsSecretAccessKey,
 		cb->responseHandler);
-	if (!pStreamer) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcribe_thread: Error allocating streamer\n");
-		return nullptr;
-	}
   if (!cb->vad) pStreamer->connect();
 	cb->streamer = pStreamer;
 	pStreamer->processData(); //blocks until done
@@ -487,16 +489,16 @@ extern "C" {
 				int voice_ms = 250;
 				int debug = 0;
 
-				if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_MODE")) {
+				if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_MODE"))) {
 					mode = atoi(var);
 				}
-				if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_SILENCE_MS")) {
+				if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_SILENCE_MS"))) {
 					silence_ms = atoi(var);
 				}
-				if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_VOICE_MS")) {
+				if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_VOICE_MS"))) {
 					voice_ms = atoi(var);
 				}
-				if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_DEBUG")) {
+				if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_DEBUG"))) {
 					debug = atoi(var);
 				}
 				switch_vad_set_mode(cb->vad, mode);
@@ -574,9 +576,10 @@ extern "C" {
 		if (switch_mutex_trylock(cb->mutex) == SWITCH_STATUS_SUCCESS) {
 			GStreamer* streamer = (GStreamer *) cb->streamer;
 			if (streamer) {
+				/* resampler output buffer, declared once and reused across loop iterations */
+				spx_int16_t out[SWITCH_RECOMMENDED_BUFFER_SIZE];
 				while (switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS && !switch_test_flag((&frame), SFF_CNG)) {
 					if (frame.datalen) {
-						spx_int16_t out[SWITCH_RECOMMENDED_BUFFER_SIZE];
 						spx_uint32_t out_len = SWITCH_RECOMMENDED_BUFFER_SIZE;
 						spx_uint32_t in_len = frame.samples;
 						size_t written;

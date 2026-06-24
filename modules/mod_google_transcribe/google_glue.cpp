@@ -1,6 +1,7 @@
 #include <cstdlib>
 #include <algorithm>
 #include <future>
+#include <memory>
 
 #include <switch.h>
 #include <switch_json.h>
@@ -45,7 +46,10 @@ using google::cloud::speech::v1p1beta1::RecognitionMetadata_RecordingDeviceType_
 using google::cloud::speech::v1p1beta1::StreamingRecognizeResponse_SpeechEventType_END_OF_SINGLE_UTTERANCE;
 using google::rpc::Status;
 
-#define CHUNKSIZE (320)
+#define CHUNKSIZE (320)  /* bytes per audio chunk: 320 = 160 samples = 20ms @ 8kHz, 16-bit mono (L16) */
+
+/* number of CHUNKSIZE chunks to pre-buffer while waiting for the gRPC stream to connect (VAD path) */
+#define PREBUFFER_CHUNKS (15)
 
 namespace {
   int case_insensitive_match(std::string s1, std::string s2) {
@@ -55,6 +59,32 @@ namespace {
       return 1; //The strings are same
    return 0; //not matched
   }
+
+  // RAII guard for switch_core_session_locate / switch_core_session_rwunlock.
+  // Locates the session on construction; releases the read-lock on destruction
+  // (any scope exit). get() returns nullptr if the session could not be located.
+  class SessionLock {
+  public:
+    explicit SessionLock(const char* sessionId) : m_session(switch_core_session_locate(sessionId)) {}
+    ~SessionLock() { if (m_session) switch_core_session_rwunlock(m_session); }
+    SessionLock(const SessionLock&) = delete;
+    SessionLock& operator=(const SessionLock&) = delete;
+    switch_core_session_t* get() const { return m_session; }
+  private:
+    switch_core_session_t* m_session;
+  };
+
+  // RAII guard for switch_mutex_lock / switch_mutex_unlock around scopes with
+  // multiple exits. Locks on construction, unlocks on destruction.
+  class MutexLock {
+  public:
+    explicit MutexLock(switch_mutex_t* mutex) : m_mutex(mutex) { switch_mutex_lock(m_mutex); }
+    ~MutexLock() { switch_mutex_unlock(m_mutex); }
+    MutexLock(const MutexLock&) = delete;
+    MutexLock& operator=(const MutexLock&) = delete;
+  private:
+    switch_mutex_t* m_mutex;
+  };
 }
 class GStreamer;
 
@@ -75,8 +105,7 @@ public:
     int punctuation, 
     const char* model, 
     int enhanced, 
-		const char* hints) : m_session(session), m_writesDone(false), m_connected(false), 
-      m_audioBuffer(CHUNKSIZE, 15) {
+		const char* hints) : m_session(session), m_writesDone(false), m_connected(false) {
   
     const char* var;
     const char* google_uri;
@@ -85,7 +114,7 @@ public:
     if (!(google_uri = switch_channel_get_variable(channel, "GOOGLE_SPEECH_TO_TEXT_URI"))) {
       google_uri = "speech.googleapis.com";
     }
-		if (var = switch_channel_get_variable(channel, "GOOGLE_APPLICATION_CREDENTIALS")) {
+		if ((var = switch_channel_get_variable(channel, "GOOGLE_APPLICATION_CREDENTIALS"))) {
 			auto channelCreds = grpc::SslCredentials(grpc::SslCredentialsOptions());
 			auto callCreds = grpc::ServiceAccountJWTAccessCredentials(var);
 			auto creds = grpc::CompositeChannelCredentials(channelCreds, callCreds);
@@ -220,7 +249,7 @@ public:
     }
 
     // alternative language
-    if (var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_ALTERNATIVE_LANGUAGE_CODES")) {
+    if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_ALTERNATIVE_LANGUAGE_CODES"))) {
       char *alt_langs[3] = { 0 };
       int argc = switch_separate_string((char *) var, ',', alt_langs, 3);
       for (int i = 0; i < argc; i++) {
@@ -230,16 +259,16 @@ public:
     }
 
     // speaker diarization
-    if (var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_SPEAKER_DIARIZATION")) {
+    if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_SPEAKER_DIARIZATION"))) {
       auto* diarization_config = config->mutable_diarization_config();
       diarization_config->set_enable_speaker_diarization(true);
       switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(m_session), SWITCH_LOG_DEBUG, "enabling speaker diarization\n", var);
-      if (var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_SPEAKER_DIARIZATION_MIN_SPEAKER_COUNT")) {
+      if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_SPEAKER_DIARIZATION_MIN_SPEAKER_COUNT"))) {
         int count = std::max(atoi(var), 1);
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(m_session), SWITCH_LOG_DEBUG, "setting min speaker count to %d\n", count);
         diarization_config->set_min_speaker_count(count);
       }
-      if (var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_SPEAKER_DIARIZATION_MAX_SPEAKER_COUNT")) {
+      if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_SPEAKER_DIARIZATION_MAX_SPEAKER_COUNT"))) {
         int count = std::max(atoi(var), 2);
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(m_session), SWITCH_LOG_DEBUG, "setting max speaker count to %d\n", count);
         diarization_config->set_max_speaker_count(count);
@@ -248,7 +277,7 @@ public:
 
     // recognition metadata
     auto* metadata = config->mutable_metadata();
-    if (var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_METADATA_INTERACTION_TYPE")) {
+    if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_METADATA_INTERACTION_TYPE"))) {
       if (case_insensitive_match("discussion", var)) metadata->set_interaction_type(RecognitionMetadata_InteractionType_DISCUSSION);
       if (case_insensitive_match("presentation", var)) metadata->set_interaction_type(RecognitionMetadata_InteractionType_PRESENTATION);
       if (case_insensitive_match("phone_call", var)) metadata->set_interaction_type(RecognitionMetadata_InteractionType_PHONE_CALL);
@@ -258,19 +287,19 @@ public:
       if (case_insensitive_match("voice_command", var)) metadata->set_interaction_type(RecognitionMetadata_InteractionType_VOICE_COMMAND);
       if (case_insensitive_match("dictation", var)) metadata->set_interaction_type(RecognitionMetadata_InteractionType_DICTATION);
     }
-    if (var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_METADATA_INDUSTRY_NAICS_CODE")) {
+    if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_METADATA_INDUSTRY_NAICS_CODE"))) {
       metadata->set_industry_naics_code_of_audio(atoi(var));
     }
-    if (var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_METADATA_MICROPHONE_DISTANCE")) {
+    if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_METADATA_MICROPHONE_DISTANCE"))) {
       if (case_insensitive_match("nearfield", var)) metadata->set_microphone_distance(RecognitionMetadata_MicrophoneDistance_NEARFIELD);
       if (case_insensitive_match("midfield", var)) metadata->set_microphone_distance(RecognitionMetadata_MicrophoneDistance_MIDFIELD);
       if (case_insensitive_match("farfield", var)) metadata->set_microphone_distance(RecognitionMetadata_MicrophoneDistance_FARFIELD);
     }
-    if (var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_METADATA_ORIGINAL_MEDIA_TYPE")) {
+    if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_METADATA_ORIGINAL_MEDIA_TYPE"))) {
       if (case_insensitive_match("audio", var)) metadata->set_original_media_type(RecognitionMetadata_OriginalMediaType_AUDIO);
       if (case_insensitive_match("video", var)) metadata->set_original_media_type(RecognitionMetadata_OriginalMediaType_VIDEO);
     }
-    if (var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_METADATA_RECORDING_DEVICE_TYPE")) {
+    if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_METADATA_RECORDING_DEVICE_TYPE"))) {
       if (case_insensitive_match("smartphone", var)) metadata->set_recording_device_type(RecognitionMetadata_RecordingDeviceType_SMARTPHONE);
       if (case_insensitive_match("pc", var)) metadata->set_recording_device_type(RecognitionMetadata_RecordingDeviceType_PC);
       if (case_insensitive_match("phone_line", var)) metadata->set_recording_device_type(RecognitionMetadata_RecordingDeviceType_PHONE_LINE);
@@ -296,13 +325,13 @@ public:
   	// Write the first request, containing the config only.
   	m_streamer->Write(m_request);
 
-    // send any buffered audio
-    int nFrames = m_audioBuffer.getNumItems();
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got stream ready, %d buffered frames\n", this, nFrames);	
+    // send any buffered audio (only the VAD path ever fills m_audioBuffer)
+    int nFrames = m_audioBuffer ? m_audioBuffer->getNumItems() : 0;
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got stream ready, %d buffered frames\n", this, nFrames);
     if (nFrames) {
       char *p;
       do {
-        p = m_audioBuffer.getNextChunk();
+        p = m_audioBuffer->getNextChunk();
         if (p) {
           write(p, CHUNKSIZE);
         }
@@ -313,7 +342,11 @@ public:
 	bool write(void* data, uint32_t datalen) {
     if (!m_connected) {
       if (datalen % CHUNKSIZE == 0) {
-        m_audioBuffer.add(data, datalen);
+        // lazily allocate the prebuffer: only the VAD path writes before connect()
+        if (!m_audioBuffer) {
+          m_audioBuffer.reset(new SimpleBuffer(CHUNKSIZE, PREBUFFER_CHUNKS));
+        }
+        m_audioBuffer->add(data, datalen);
       }
       return true;
     }
@@ -372,11 +405,10 @@ private:
   bool m_writesDone;
   bool m_connected;
   std::promise<void> m_promise;
-  SimpleBuffer m_audioBuffer;
+  std::unique_ptr<SimpleBuffer> m_audioBuffer;  // lazily allocated; only used on the VAD prebuffer path
 };
 
 static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *obj) {
-  static int count;
 	struct cap_cb *cb = (struct cap_cb *) obj;
 	GStreamer* streamer = (GStreamer *) cb->streamer;
 
@@ -389,12 +421,12 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
   // Read responses.
   StreamingRecognizeResponse response;
   while (streamer->read(&response)) {  // Returns false when no more to read.
-    switch_core_session_t* session = switch_core_session_locate(cb->sessionId);
+    SessionLock sessionLock(cb->sessionId);
+    switch_core_session_t* session = sessionLock.get();
     if (!session) {
       switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "grpc_read_thread: session %s is gone!\n", cb->sessionId) ;
       return nullptr;
     }
-    count++;
     auto speech_event_type = response.speech_event_type();
     if (response.has_error()) {
       Status status = response.error();
@@ -413,7 +445,7 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
     }
     
     for (int r = 0; r < response.results_size(); ++r) {
-      auto result = response.results(r);
+      const auto& result = response.results(r);
       cJSON * jResult = cJSON_CreateObject();
       cJSON * jAlternatives = cJSON_CreateArray();
       cJSON * jStability = cJSON_CreateNumber(result.stability());
@@ -435,7 +467,7 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
       cJSON_AddItemToObject(jResult, "result_end_time", jResultEndTime);
 
       for (int a = 0; a < result.alternatives_size(); ++a) {
-        auto alternative = result.alternatives(a);
+        const auto& alternative = result.alternatives(a);
         cJSON* jAlt = cJSON_CreateObject();
         cJSON* jConfidence = cJSON_CreateNumber(alternative.confidence());
         cJSON* jTranscript = cJSON_CreateString(alternative.transcript().c_str());
@@ -446,7 +478,7 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
           cJSON * jWords = cJSON_CreateArray();
           switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "grpc_read_thread: %d words\n", alternative.words_size()) ;
           for (int b = 0; b < alternative.words_size(); b++) {
-            auto words = alternative.words(b);
+            const auto& words = alternative.words(b);
             cJSON* jWord = cJSON_CreateObject();
             cJSON_AddItemToObject(jWord, "word", cJSON_CreateString(words.word().c_str()));
             if (words.has_start_time()) {
@@ -488,12 +520,13 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
         streamer->writesDone();
       }
     }
-    switch_core_session_rwunlock(session);
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "grpc_read_thread: got %d responses\n", response.results_size());
+    // sessionLock releases the session read-lock here at scope exit
   }
 
   {
-    switch_core_session_t* session = switch_core_session_locate(cb->sessionId);
+    SessionLock sessionLock(cb->sessionId);
+    switch_core_session_t* session = sessionLock.get();
     if (session) {
       grpc::Status status = streamer->finish();
       if (11 == status.error_code()) {
@@ -505,8 +538,8 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
         }
       }
       switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "grpc_read_thread: finish() status %s (%d)\n", status.error_message().c_str(), status.error_code()) ;
-      switch_core_session_rwunlock(session);
     }
+    // sessionLock releases the session read-lock here at scope exit
   }
   return nullptr;
 }
@@ -584,16 +617,16 @@ extern "C" {
           int voice_ms = 250;
           int debug = 0;
 
-          if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_MODE")) {
+          if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_MODE"))) {
             mode = atoi(var);
           }
-          if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_SILENCE_MS")) {
+          if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_SILENCE_MS"))) {
             silence_ms = atoi(var);
           }
-          if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_VOICE_MS")) {
+          if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_VOICE_MS"))) {
             voice_ms = atoi(var);
           }
-          if (var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_VOICE_MS")) {
+          if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_VOICE_MS"))) {
             voice_ms = atoi(var);
           }
           switch_vad_set_mode(cb->vad, mode);
@@ -633,12 +666,11 @@ extern "C" {
 
       if (bug) {
         struct cap_cb *cb = (struct cap_cb *) switch_core_media_bug_get_user_data(bug);
-        switch_mutex_lock(cb->mutex);
+        MutexLock cbLock(cb->mutex);  // unlocks on any exit from this scope
 
         if (!switch_channel_get_private(channel, cb->bugname)) {
           // race condition
           switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "%s Bug is not attached (race).\n", switch_channel_get_name(channel));
-          switch_mutex_unlock(cb->mutex);
           return SWITCH_STATUS_FALSE;
         }
         switch_channel_set_private(channel, cb->bugname, NULL);
@@ -680,9 +712,7 @@ extern "C" {
 
 			  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "google_speech_session_cleanup: Closed stream\n");
 
-			  switch_mutex_unlock(cb->mutex);
-
-
+			  // cbLock unlocks cb->mutex here at scope exit
 			  return SWITCH_STATUS_SUCCESS;
       }
 

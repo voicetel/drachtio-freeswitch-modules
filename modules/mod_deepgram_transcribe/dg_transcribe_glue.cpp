@@ -24,6 +24,29 @@
 #define FRAME_SIZE_8000  320 /*which means each 20ms frame as 320 bytes at 8 khz (1 channel only)*/
 
 namespace {
+  /* RAII guard for switch_core_session_locate / switch_core_session_rwunlock.
+     Locates on construction; rwunlocks on destruction so every exit path releases
+     the read lock. Behavior is identical to the manual locate/unlock pattern. */
+  struct SessionLock {
+    switch_core_session_t* session;
+    explicit SessionLock(const char* uuid) : session(switch_core_session_locate(uuid)) {}
+    ~SessionLock() { if (session) switch_core_session_rwunlock(session); }
+    SessionLock(const SessionLock&) = delete;
+    SessionLock& operator=(const SessionLock&) = delete;
+  };
+
+  /* RAII unlock guard for switch_mutex_t. It does NOT acquire the lock: it adopts
+     an already-held mutex (e.g. one taken via switch_mutex_trylock) and unlocks it
+     on every exit path so a locked region cannot leak the mutex on an early return.
+     Trylock semantics at the call site are preserved exactly. */
+  struct MutexUnlockGuard {
+    switch_mutex_t* mutex;
+    explicit MutexUnlockGuard(switch_mutex_t* m) : mutex(m) {}
+    ~MutexUnlockGuard() { switch_mutex_unlock(mutex); }
+    MutexUnlockGuard(const MutexUnlockGuard&) = delete;
+    MutexUnlockGuard& operator=(const MutexUnlockGuard&) = delete;
+  };
+
   static bool hasDefaultCredentials = false;
   static const char* defaultApiKey = nullptr;
   static const char *requestedBufferSecs = std::getenv("MOD_AUDIO_FORK_BUFFER_SECS");
@@ -166,7 +189,7 @@ namespace {
       if (customModel) oss << "&model=" << customModel;
     }
 
-    if (var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_MODEL_VERSION")) {
+    if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_MODEL_VERSION"))) {
      oss <<  "&version=";
      oss <<  var;
     }
@@ -178,7 +201,7 @@ namespace {
      oss <<  "&channels=2";
     }
 
-    if (var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_ENABLE_SMART_FORMAT")) {
+    if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_ENABLE_SMART_FORMAT"))) {
      oss <<  "&smart_format=true";
      oss <<  "&no_delay=true";
      /**
@@ -186,19 +209,19 @@ namespace {
       * 
       */
     }
-    if (var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_ENABLE_AUTOMATIC_PUNCTUATION")) {
+    if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_ENABLE_AUTOMATIC_PUNCTUATION"))) {
      oss <<  "&punctuate=true";
     }
     if (switch_true(switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_PROFANITY_FILTER"))) {
      oss <<  "&profanity_filter=true";
     }
-    if (var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_REDACT")) {
+    if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_REDACT"))) {
      oss <<  "&redact=";
      oss <<  var;
     }
     if (switch_true(switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_DIARIZE"))) {
      oss <<  "&diarize=true";
-      if (var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_DIARIZE_VERSION")) {
+      if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_DIARIZE_VERSION"))) {
        oss <<  "&diarize_version=";
        oss <<  var;
       }
@@ -206,7 +229,7 @@ namespace {
     if (switch_true(switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_NER"))) {
      oss <<  "&ner=true";
     }
-    if (var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_ALTERNATIVES")) {
+    if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_ALTERNATIVES"))) {
      oss <<  "&alternatives=";
      oss <<  var;
     }
@@ -241,22 +264,22 @@ namespace {
        oss <<  encodeURIComponent(phrases[i]);
       }
 		}
-    if (var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_TAG")) {
+    if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_TAG"))) {
      oss <<  "&tag=";
      oss <<  var;
     }
     if (interim) {
      oss <<  "&interim_results=true";
     }
-    if (var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_ENDPOINTING")) {
+    if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_ENDPOINTING"))) {
       oss <<  "&endpointing=";
       oss <<  var;
     }
-    if (var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_UTTERANCE_END_MS")) {
+    if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_UTTERANCE_END_MS"))) {
       oss <<  "&utterance_end_ms=";
       oss <<  var;
     }
-    if (var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_VAD_TURNOFF")) {
+    if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_VAD_TURNOFF"))) {
       oss <<  "&vad_turnoff=";
       oss <<  var;
     }
@@ -267,7 +290,8 @@ namespace {
   }
 
   static void eventCallback(const char* sessionId, deepgram::AudioPipe::NotifyEvent_t event, const char* message, bool finished) {
-    switch_core_session_t* session = switch_core_session_locate(sessionId);
+    SessionLock sl(sessionId);
+    switch_core_session_t* session = sl.session;
     if (session) {
       switch_channel_t *channel = switch_core_session_get_channel(session);
       switch_media_bug_t *bug = (switch_media_bug_t*) switch_channel_get_private(channel, MY_BUG_NAME);
@@ -316,10 +340,9 @@ namespace {
           }
         }
       }
-      switch_core_session_rwunlock(session);
     }
   }
-  switch_status_t fork_data_init(private_t *tech_pvt, switch_core_session_t *session, 
+  switch_status_t fork_data_init(private_t *tech_pvt, switch_core_session_t *session,
     int sampling, int desiredSampling, int channels, char *lang, int interim, 
     char* bugname, responseHandler_t responseHandler) {
 
@@ -348,6 +371,8 @@ namespace {
     tech_pvt->id = ++idxCallCount;
     tech_pvt->buffer_overrun_notified = 0;
     
+    /* size the send buffer to hold nAudioBufferSecs of L16 audio:
+       (bytes per 20ms frame) * (frames per second) * channels * seconds, plus LWS_PRE headroom */
     size_t buflen = LWS_PRE + (FRAME_SIZE_8000 * desiredSampling / 8000 * channels * 1000 / RTP_PACKETIZATION_PERIOD * nAudioBufferSecs);
 
     const char* apiKey = switch_channel_get_variable(channel, "DEEPGRAM_API_KEY");
@@ -393,9 +418,8 @@ namespace {
       case LLL_WARN: llevel = SWITCH_LOG_WARNING; break;
       case LLL_NOTICE: llevel = SWITCH_LOG_NOTICE; break;
       case LLL_INFO: llevel = SWITCH_LOG_INFO; break;
-      break;
     }
-	  switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "%s\n", line);
+	  switch_log_printf(SWITCH_CHANNEL_LOG, llevel, "%s\n", line);
   }
 }
 
@@ -405,7 +429,9 @@ extern "C" {
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "mod_deepgram_transcribe: audio buffer (in secs):    %d secs\n", nAudioBufferSecs);
     switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "mod_deepgram_transcribe: lws service threads:       %d\n", nServiceThreads);
  
-    int logs = LLL_ERR | LLL_WARN | LLL_NOTICE || LLL_INFO | LLL_PARSER | LLL_HEADER | LLL_EXT | LLL_CLIENT  | LLL_LATENCY | LLL_DEBUG ;
+    /* deliberate mask: preserve today's effective verbosity (ERR|WARN|NOTICE).
+       Do not enable LLL_INFO/LLL_DEBUG: at scale they flood the logs. */
+    int logs = LLL_ERR | LLL_WARN | LLL_NOTICE;
     
     deepgram::AudioPipe::initialize(nServiceThreads, logs, lws_logger);
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "AudioPipe::initialize completed\n");
@@ -496,13 +522,13 @@ extern "C" {
     if (!tech_pvt) return SWITCH_TRUE;
     
     if (switch_mutex_trylock(tech_pvt->mutex) == SWITCH_STATUS_SUCCESS) {
+      /* lock already acquired via trylock above; guard unlocks it on every exit path */
+      MutexUnlockGuard mlk(tech_pvt->mutex);
       if (!tech_pvt->pAudioPipe) {
-        switch_mutex_unlock(tech_pvt->mutex);
         return SWITCH_TRUE;
       }
       deepgram::AudioPipe *pAudioPipe = static_cast<deepgram::AudioPipe *>(tech_pvt->pAudioPipe);
       if (pAudioPipe->getLwsState() != deepgram::AudioPipe::LWS_CLIENT_CONNECTED) {
-        switch_mutex_unlock(tech_pvt->mutex);
         return SWITCH_TRUE;
       }
 
@@ -575,7 +601,7 @@ extern "C" {
       }
 
       pAudioPipe->unlockAudioBuffer();
-      switch_mutex_unlock(tech_pvt->mutex);
+      /* mlk unlocks tech_pvt->mutex here as it goes out of scope */
     }
     return SWITCH_TRUE;
   }

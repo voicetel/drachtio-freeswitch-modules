@@ -3,6 +3,7 @@
 
 #include <string>
 #include <list>
+#include <atomic>
 #include <mutex>
 #include <future>
 #include <queue>
@@ -115,7 +116,9 @@ private:
   
   bool connect_client(struct lws_per_vhost_data *vhd);
 
-  LwsState_t m_state;
+  /* connection-state flag shared between the lws service thread and the
+     media-bug/reaper threads; atomic so reads/writes don't race (seq_cst) */
+  std::atomic<LwsState_t> m_state;
   std::string m_uuid;
   std::string m_host;
   unsigned int m_port;
@@ -136,8 +139,9 @@ private:
   notifyHandler_t m_callback;
   log_emit_function m_logger;
   std::string m_apiKey;
-  bool m_gracefulShutdown;
-  bool m_finished;
+  /* cross-thread flags (written by reaper/finish, read by lws callbacks) */
+  std::atomic<bool> m_gracefulShutdown;
+  std::atomic<bool> m_finished;
   std::string m_bugname;
   std::promise<void> m_promise;
 };
