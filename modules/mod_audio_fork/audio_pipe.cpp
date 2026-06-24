@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <vector>
 
 /* discard incoming text messages over the socket that are longer than this */
 #define MAX_RECV_BUF_SIZE (65 * 1024 * 10)
@@ -64,7 +65,10 @@ int AudioPipe::lws_callback(struct lws *wsi,
 
           ap->getBasicAuth(username, password);
           lwsl_notice("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER username: %s, password: xxxxxx\n", username.c_str());
-          if (dch_lws_http_basic_auth_gen(username.c_str(), password.c_str(), b, sizeof(b))) break;
+          if (dch_lws_http_basic_auth_gen(username.c_str(), password.c_str(), b, sizeof(b))) {
+            lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER failed generating basic auth header; failing handshake to avoid sending an unauthenticated request\n");
+            return -1;
+          }
           if (lws_add_http_header_by_token(wsi, WSI_TOKEN_HTTP_AUTHORIZATION, (unsigned char *)b, strlen(b), p, end)) return -1;
         }
       }
@@ -100,7 +104,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
           ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::CONNECT_SUCCESS, NULL);
         }
         else {
-          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_ESTABLISHED %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_ESTABLISHED unable to find wsi %p..\n", wsi);
         }
       }      
       break;
@@ -108,7 +112,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
       {
         AudioPipe* ap = *ppAp;
         if (!ap) {
-          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CLOSED %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CLOSED unable to find wsi %p..\n", wsi);
           return 0;
         }
         if (ap->m_state == LWS_CLIENT_DISCONNECTING) {
@@ -134,7 +138,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
       {
         AudioPipe* ap = *ppAp;
         if (!ap) {
-          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE unable to find wsi %p..\n", wsi);
           return 0;
         }
 
@@ -193,7 +197,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
       {
         AudioPipe* ap = *ppAp;
         if (!ap) {
-          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE unable to find wsi %p..\n", wsi);
           return 0;
         }
 
@@ -209,10 +213,10 @@ int AudioPipe::lws_callback(struct lws *wsi,
         {
           std::lock_guard<std::mutex> lk(ap->m_text_mutex);
           if (ap->m_metadata.length() > 0) {
-            uint8_t buf[ap->m_metadata.length() + LWS_PRE];
-            memcpy(buf + LWS_PRE, ap->m_metadata.c_str(), ap->m_metadata.length());
+            std::vector<uint8_t> buf(ap->m_metadata.length() + LWS_PRE);
+            memcpy(buf.data() + LWS_PRE, ap->m_metadata.c_str(), ap->m_metadata.length());
             int n = ap->m_metadata.length();
-            int m = lws_write(wsi, buf + LWS_PRE, n, LWS_WRITE_TEXT);
+            int m = lws_write(wsi, buf.data() + LWS_PRE, n, LWS_WRITE_TEXT);
             ap->m_metadata.clear();
             if (m < n) {
               return -1;
@@ -279,7 +283,6 @@ std::mutex AudioPipe::mutex_writes;
 std::list<AudioPipe*> AudioPipe::pendingConnects;
 std::list<AudioPipe*> AudioPipe::pendingDisconnects;
 std::list<AudioPipe*> AudioPipe::pendingWrites;
-AudioPipe::log_emit_function AudioPipe::logger;
 std::mutex AudioPipe::mapMutex;
 std::unordered_map<std::thread::id, bool> AudioPipe::stopFlags;
 std::queue<std::thread::id> AudioPipe::threadIds;

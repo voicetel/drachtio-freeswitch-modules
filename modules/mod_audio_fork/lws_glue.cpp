@@ -22,6 +22,29 @@
 #define FRAME_SIZE_8000  320 /*which means each 20ms frame as 320 bytes at 8 khz (1 channel only)*/
 
 namespace {
+  /* RAII guard for switch_core_session_locate / switch_core_session_rwunlock.
+     Locates on construction; rwunlocks on destruction so every exit path releases
+     the read lock. Behavior is identical to the manual locate/unlock pattern. */
+  struct SessionLock {
+    switch_core_session_t* session;
+    explicit SessionLock(const char* uuid) : session(switch_core_session_locate(uuid)) {}
+    ~SessionLock() { if (session) switch_core_session_rwunlock(session); }
+    SessionLock(const SessionLock&) = delete;
+    SessionLock& operator=(const SessionLock&) = delete;
+  };
+
+  /* RAII unlock guard for switch_mutex_t. It does NOT acquire the lock: it adopts
+     an already-held mutex (e.g. one taken via switch_mutex_trylock) and unlocks it
+     on every exit path so a locked region cannot leak the mutex on an early return.
+     Trylock semantics at the call site are preserved exactly. */
+  struct MutexUnlockGuard {
+    switch_mutex_t* mutex;
+    explicit MutexUnlockGuard(switch_mutex_t* m) : mutex(m) {}
+    ~MutexUnlockGuard() { switch_mutex_unlock(mutex); }
+    MutexUnlockGuard(const MutexUnlockGuard&) = delete;
+    MutexUnlockGuard& operator=(const MutexUnlockGuard&) = delete;
+  };
+
   static const char *requestedBufferSecs = std::getenv("MOD_AUDIO_FORK_BUFFER_SECS");
   static int nAudioBufferSecs = std::max(1, std::min(requestedBufferSecs ? ::atoi(requestedBufferSecs) : 2, 5));
   static const char *requestedNumServiceThreads = std::getenv("MOD_AUDIO_FORK_SERVICE_THREADS");
@@ -48,7 +71,7 @@ namespace {
           const char* szAudioContentType = cJSON_GetObjectCstr(jsonData, "audioContentType");
           char fileType[6];
           int sampleRate = 16000;
-          if (0 == strcmp(szAudioContentType, "raw")) {
+          if (szAudioContentType && 0 == strcmp(szAudioContentType, "raw")) {
             cJSON* jsonSR = cJSON_GetObjectItem(jsonData, "sampleRate");
             sampleRate = jsonSR && jsonSR->valueint ? jsonSR->valueint : 0;
 
@@ -76,12 +99,12 @@ namespace {
                 break;
             }
           }
-          else if (0 == strcmp(szAudioContentType, "wave") || 0 == strcmp(szAudioContentType, "wav")) {
+          else if (szAudioContentType && (0 == strcmp(szAudioContentType, "wave") || 0 == strcmp(szAudioContentType, "wav"))) {
             strcpy(fileType, ".wav");
           }
           else {
             validAudio = 0;
-            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) processIncomingMessage - unsupported audioContentType: %s\n", tech_pvt->id, szAudioContentType);
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) processIncomingMessage - unsupported audioContentType: %s\n", tech_pvt->id, szAudioContentType ? szAudioContentType : "(null)");
           }
 
           if (validAudio) {
@@ -157,7 +180,8 @@ namespace {
   }
 
   static void eventCallback(const char* sessionId, const char* bugname, AudioPipe::NotifyEvent_t event, const char* message) {
-    switch_core_session_t* session = switch_core_session_locate(sessionId);
+    SessionLock sl(sessionId);
+    switch_core_session_t* session = sl.session;
     if (session) {
       switch_channel_t *channel = switch_core_session_get_channel(session);
       switch_media_bug_t *bug = (switch_media_bug_t*) switch_channel_get_private(channel, bugname);
@@ -201,7 +225,7 @@ namespace {
           }
         }
       }
-      switch_core_session_rwunlock(session);
+      /* sl rwunlocks the session here as it goes out of scope */
     }
   }
   switch_status_t fork_data_init(private_t *tech_pvt, switch_core_session_t *session, char * host, 
@@ -216,7 +240,8 @@ namespace {
 
     switch_core_session_get_read_impl(session, &read_impl);
   
-    if (username = switch_channel_get_variable(channel, "MOD_AUDIO_BASIC_AUTH_USERNAME")) {
+    username = switch_channel_get_variable(channel, "MOD_AUDIO_BASIC_AUTH_USERNAME");
+    if (username) {
       password = switch_channel_get_variable(channel, "MOD_AUDIO_BASIC_AUTH_PASSWORD");
     }
 
@@ -298,7 +323,6 @@ namespace {
       case LLL_WARN: llevel = SWITCH_LOG_WARNING; break;
       case LLL_NOTICE: llevel = SWITCH_LOG_NOTICE; break;
       case LLL_INFO: llevel = SWITCH_LOG_INFO; break;
-      break;
     }
 	  switch_log_printf(SWITCH_CHANNEL_LOG, llevel, "%s\n", line);
   }
@@ -324,7 +348,12 @@ extern "C" {
     }
 
     // get the scheme
-    strncpy(server, szServerUri, MAX_WS_URL_LEN + MAX_PATH_LEN);
+    if (strlen(szServerUri) >= sizeof(server)) {
+      switch_log_printf(SWITCH_CHANNEL_CHANNEL_LOG(channel), SWITCH_LOG_NOTICE, "parse_ws_uri - error parsing uri: too long (max %lu)\n", sizeof(server) - 1);
+      return 0;
+    }
+    strncpy(server, szServerUri, sizeof(server) - 1);
+    server[sizeof(server) - 1] = '\0';
     if (0 == strncmp(server, "https://", 8) || 0 == strncmp(server, "HTTPS://", 8)) {
       *pSslFlags = flags;
       offset = 8;
@@ -537,13 +566,13 @@ extern "C" {
     if (!tech_pvt || tech_pvt->audio_paused || tech_pvt->graceful_shutdown) return SWITCH_TRUE;
     
     if (switch_mutex_trylock(tech_pvt->mutex) == SWITCH_STATUS_SUCCESS) {
+      /* lock already acquired via trylock above; guard unlocks it on every exit path */
+      MutexUnlockGuard mlk(tech_pvt->mutex);
       if (!tech_pvt->pAudioPipe) {
-        switch_mutex_unlock(tech_pvt->mutex);
         return SWITCH_TRUE;
       }
       AudioPipe *pAudioPipe = static_cast<AudioPipe *>(tech_pvt->pAudioPipe);
       if (pAudioPipe->getLwsState() != AudioPipe::LWS_CLIENT_CONNECTED) {
-        switch_mutex_unlock(tech_pvt->mutex);
         return SWITCH_TRUE;
       }
 
@@ -596,7 +625,7 @@ extern "C" {
 
             if (out_len > 0) {
               // bytes written = num samples * 2 * num channels
-              size_t bytes_written = out_len << tech_pvt->channels;
+              size_t bytes_written = out_len * 2 * tech_pvt->channels;
               pAudioPipe->binaryWritePtrAdd(bytes_written);
               available = pAudioPipe->binarySpaceAvailable();
             }
@@ -614,7 +643,7 @@ extern "C" {
       }
 
       pAudioPipe->unlockAudioBuffer();
-      switch_mutex_unlock(tech_pvt->mutex);
+      /* mlk unlocks tech_pvt->mutex here as it goes out of scope */
     }
     return SWITCH_TRUE;
   }

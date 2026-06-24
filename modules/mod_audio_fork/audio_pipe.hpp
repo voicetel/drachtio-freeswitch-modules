@@ -3,6 +3,7 @@
 
 #include <string>
 #include <list>
+#include <atomic>
 #include <mutex>
 #include <queue>
 #include <unordered_map>
@@ -61,7 +62,7 @@ public:
     m_audio_buffer_write_offset += len;
   }
   void binaryWritePtrResetToZero(void) {
-    m_audio_buffer_write_offset = 0;
+    m_audio_buffer_write_offset = LWS_PRE;
   }
   void lockAudioBuffer(void) {
     m_audio_mutex.lock();
@@ -101,7 +102,6 @@ private:
   static std::list<AudioPipe*> pendingConnects;
   static std::list<AudioPipe*> pendingDisconnects;
   static std::list<AudioPipe*> pendingWrites;
-  static log_emit_function logger;
 
   static std::mutex mapMutex;
   static std::unordered_map<std::thread::id, bool> stopFlags;
@@ -118,7 +118,9 @@ private:
   
   bool connect_client(struct lws_per_vhost_data *vhd);
 
-  LwsState_t m_state;
+  /* connection-state flag shared between the lws service thread and the
+     media-bug threads; atomic so reads/writes don't race (seq_cst) */
+  std::atomic<LwsState_t> m_state;
   std::string m_uuid;
   std::string m_host;
   std::string m_bugname;
@@ -138,10 +140,10 @@ private:
   size_t m_recv_buf_len;
   struct lws_per_vhost_data* m_vhd;
   notifyHandler_t m_callback;
-  log_emit_function m_logger;
   std::string m_username;
   std::string m_password;
-  bool m_gracefulShutdown;
+  /* cross-thread flag (written by graceful-shutdown path, read by lws callback) */
+  std::atomic<bool> m_gracefulShutdown;
 };
 
 #endif
