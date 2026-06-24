@@ -23,11 +23,9 @@ L16 audio to the vendor, returning transcripts as FreeSWITCH custom events:
 
 **Audio streaming** — [`mod_audio_fork`](modules/mod_audio_fork/README.md):
 streams L16 audio over WebSockets (libwebsockets) to your own server, with
-optional playback injection back into the call. Recently hardened (memory
-safety, thread-safety, input validation), verified to build and load in
-FreeSWITCH 1.10.12. **Caveat:** a remaining AudioPipe lifecycle / use-after-free
-rework is still pending, so treat it as actively-being-hardened rather than
-finished.
+optional playback injection back into the call. Hardened for memory safety,
+thread-safety, input validation, and correct connection lifecycle (no
+use-after-free on disconnect); verified to build and load in FreeSWITCH 1.10.12.
 
 ## Everything else
 
