@@ -93,24 +93,26 @@ public:
 
 		const char* var;
 		switch_core_session_t* session = switch_core_session_locate(sessionId);
-    switch_channel_t *channel = switch_core_session_get_channel(session);
+		if (session) {
+			switch_channel_t *channel = switch_core_session_get_channel(session);
 
-		if (var = switch_channel_get_variable(channel, "AWS_SHOW_SPEAKER_LABEL")) {
-			m_request.SetShowSpeakerLabel(true);
+			if (var = switch_channel_get_variable(channel, "AWS_SHOW_SPEAKER_LABEL")) {
+				m_request.SetShowSpeakerLabel(true);
+			}
+			if (var = switch_channel_get_variable(channel, "AWS_ENABLE_CHANNEL_IDENTIFICATION")) {
+				m_request.SetEnableChannelIdentification(true);
+			}
+			if (var = switch_channel_get_variable(channel, "AWS_VOCABULARY_NAME")) {
+				m_request.SetVocabularyName(var);
+			}
+			if (var = switch_channel_get_variable(channel, "AWS_VOCABULARY_FILTER_NAME")) {
+				m_request.SetVocabularyFilterName(var);
+			}
+			if (var = switch_channel_get_variable(channel, "AWS_VOCABULARY_FILTER_METHOD")) {
+				m_request.SetVocabularyFilterMethod(VocabularyFilterMethodMapper::GetVocabularyFilterMethodForName(var));
+			}
+			switch_core_session_rwunlock(session);
 		}
-		if (var = switch_channel_get_variable(channel, "AWS_ENABLE_CHANNEL_IDENTIFICATION")) {
-			m_request.SetEnableChannelIdentification(true);
-		}
-		if (var = switch_channel_get_variable(channel, "AWS_VOCABULARY_NAME")) {
-			m_request.SetVocabularyName(var);
-		}
-		if (var = switch_channel_get_variable(channel, "AWS_VOCABULARY_FILTER_NAME")) {
-			m_request.SetVocabularyFilterName(var);
-		}
-		if (var = switch_channel_get_variable(channel, "AWS_VOCABULARY_FILTER_METHOD")) {
-			m_request.SetVocabularyFilterMethod(VocabularyFilterMethodMapper::GetVocabularyFilterMethodForName(var));
-		}
-    switch_core_session_rwunlock(session);
 	}
 
 	void connect() {
@@ -402,10 +404,16 @@ extern "C" {
 		switch_threadattr_t *thd_attr = NULL;
 		switch_memory_pool_t *pool = switch_core_session_get_pool(session);
 		auto read_codec = switch_core_session_get_read_codec(session);
+		if (!read_codec || !read_codec->implementation) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "no read codec/implementation on session\n");
+			// cannot use 'goto done' here: it would cross the initializations of
+			// sampleRate/cb/etc. (ill-formed in C++); done: only does 'return status'.
+			return SWITCH_STATUS_FALSE;
+		}
 		uint32_t sampleRate = read_codec->implementation->actual_samples_per_second;
 
 		struct cap_cb* cb = (struct cap_cb *) switch_core_session_alloc(session, sizeof(*cb));
-		memset(cb, sizeof(cb), 0);
+		memset(cb, 0, sizeof(*cb));
 		const char* awsAccessKeyId = switch_channel_get_variable(channel, "AWS_ACCESS_KEY_ID");
 		const char* awsSecretAccessKey = switch_channel_get_variable(channel, "AWS_SECRET_ACCESS_KEY");
 		const char* awsRegion = switch_channel_get_variable(channel, "AWS_REGION");
@@ -417,13 +425,18 @@ extern "C" {
 			goto done;
 		}
 		strncpy(cb->sessionId, switch_core_session_get_uuid(session), MAX_SESSION_ID);
+		cb->sessionId[MAX_SESSION_ID-1] = '\0';
 		strncpy(cb->bugname, bugname, MAX_BUG_LEN);
+		cb->bugname[MAX_BUG_LEN-1] = '\0';
 
 		if (awsAccessKeyId && awsSecretAccessKey && awsRegion) {
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "Using channel vars for aws authentication\n");
 			strncpy(cb->awsAccessKeyId, awsAccessKeyId, 128);
+			cb->awsAccessKeyId[128-1] = '\0';
 			strncpy(cb->awsSecretAccessKey, awsSecretAccessKey, 128);
+			cb->awsSecretAccessKey[128-1] = '\0';
 			strncpy(cb->region, awsRegion, MAX_REGION);
+			cb->region[MAX_REGION-1] = '\0';
 
 		}
 		else if (std::getenv("AWS_ACCESS_KEY_ID") &&
@@ -431,8 +444,11 @@ extern "C" {
 			std::getenv("AWS_REGION")) {
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "Using env vars for aws authentication\n");
 			strncpy(cb->awsAccessKeyId, std::getenv("AWS_ACCESS_KEY_ID"), 128);
-			strncpy(cb->awsSecretAccessKey, std::getenv("AWS_SECRET_ACCESS_KEY"), 128);		
+			cb->awsAccessKeyId[128-1] = '\0';
+			strncpy(cb->awsSecretAccessKey, std::getenv("AWS_SECRET_ACCESS_KEY"), 128);
+			cb->awsSecretAccessKey[128-1] = '\0';
 			strncpy(cb->region, std::getenv("AWS_REGION"), MAX_REGION);
+			cb->region[MAX_REGION-1] = '\0';
 		}
 		else {
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "No channel vars or env vars for aws authentication..will use default profile if found\n");
@@ -448,6 +464,7 @@ extern "C" {
 
 		cb->interim = interim;
 		strncpy(cb->lang, lang, MAX_LANG);
+		cb->lang[MAX_LANG-1] = '\0';
 		cb->samples_per_second = sampleRate;
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "sample rate of rtp stream is %d\n", samples_per_second);
 		if (sampleRate != 8000) {

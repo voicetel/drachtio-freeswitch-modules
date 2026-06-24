@@ -388,22 +388,28 @@ extern "C" {
 		uint32_t sampleRate = read_codec->implementation->actual_samples_per_second;
 		const char* sessionId = switch_core_session_get_uuid(session);
 		struct cap_cb* cb = (struct cap_cb *) switch_core_session_alloc(session, sizeof(*cb));
-		memset(cb, sizeof(cb), 0);
+		memset(cb, 0, sizeof(*cb));
 		const char* subscriptionKey = switch_channel_get_variable(channel, "AZURE_SUBSCRIPTION_KEY");
 		const char* region = switch_channel_get_variable(channel, "AZURE_REGION");
 		cb->channels = channels;
 		strncpy(cb->sessionId, sessionId, MAX_SESSION_ID);
+		cb->sessionId[MAX_SESSION_ID-1] = '\0';
 		strncpy(cb->bugname, bugname, MAX_BUG_LEN);
+		cb->bugname[MAX_BUG_LEN-1] = '\0';
 
 		if (subscriptionKey && region) {
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "Using channel vars for azure authentication\n");
 			strncpy(cb->subscriptionKey, subscriptionKey, MAX_SUBSCRIPTION_KEY_LEN);
+			cb->subscriptionKey[MAX_SUBSCRIPTION_KEY_LEN-1] = '\0';
 			strncpy(cb->region, region, MAX_REGION);
+			cb->region[MAX_REGION-1] = '\0';
 		}
 		else if (std::getenv("AZURE_SUBSCRIPTION_KEY") && std::getenv("AZURE_REGION")) {
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "Using env vars for azure authentication\n");
 			strncpy(cb->subscriptionKey, std::getenv("AZURE_SUBSCRIPTION_KEY"), MAX_SUBSCRIPTION_KEY_LEN);
+			cb->subscriptionKey[MAX_SUBSCRIPTION_KEY_LEN-1] = '\0';
 			strncpy(cb->region, std::getenv("AZURE_REGION"), MAX_REGION);
+			cb->region[MAX_REGION-1] = '\0';
 		}
 		else {
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "No channel vars or env vars for azure authentication..will use default profile if found\n");
@@ -419,6 +425,7 @@ extern "C" {
 
 		cb->interim = interim;
 		strncpy(cb->lang, lang, MAX_LANG);
+		cb->lang[MAX_LANG-1] = '\0';
 
 		/* determine if we need to resample the audio to 16-bit 8khz */
 		if (sampleRate != 8000) {
@@ -469,8 +476,9 @@ extern "C" {
 			cb->streamer = streamer;
 			if (!cb->vad) streamer->connect();
 		} catch (std::exception& e) {
-			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "%s: Error initializing gstreamer: %s.\n", 
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "%s: Error initializing gstreamer: %s.\n",
 				switch_channel_get_name(channel), e.what());
+			killcb(cb);
 			return SWITCH_STATUS_FALSE;
 		}
 

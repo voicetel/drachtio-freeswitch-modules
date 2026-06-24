@@ -67,7 +67,7 @@ public:
     m_audio_buffer_write_offset += len;
   }
   void binaryWritePtrResetToZero(void) {
-    m_audio_buffer_write_offset = 0;
+    m_audio_buffer_write_offset = LWS_PRE;
   }
   void lockAudioBuffer(void) {
     m_audio_mutex.lock();

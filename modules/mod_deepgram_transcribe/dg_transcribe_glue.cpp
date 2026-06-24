@@ -167,7 +167,7 @@ namespace {
     }
 
     if (var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_MODEL_VERSION")) {
-     oss <<  "&version";
+     oss <<  "&version=";
      oss <<  var;
     }
     oss <<  "&language=";
@@ -336,9 +336,12 @@ namespace {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "path: %s\n", path.c_str());
 
     strncpy(tech_pvt->sessionId, switch_core_session_get_uuid(session), MAX_SESSION_ID);
+    tech_pvt->sessionId[MAX_SESSION_ID-1] = '\0';
     strncpy(tech_pvt->host, "api.deepgram.com", MAX_WS_URL_LEN);
+    tech_pvt->host[MAX_WS_URL_LEN-1] = '\0';
     tech_pvt->port = 443;
-    strncpy(tech_pvt->path, path.c_str(), MAX_PATH_LEN);    
+    strncpy(tech_pvt->path, path.c_str(), MAX_PATH_LEN);
+    tech_pvt->path[MAX_PATH_LEN-1] = '\0';
     tech_pvt->sampling = desiredSampling;
     tech_pvt->responseHandler = responseHandler;
     tech_pvt->channels = channels;
@@ -553,7 +556,7 @@ extern "C" {
 
             if (out_len > 0) {
               // bytes written = num samples * 2 * num channels
-              size_t bytes_written = out_len << tech_pvt->channels;
+              size_t bytes_written = out_len * 2 * tech_pvt->channels;
               pAudioPipe->binaryWritePtrAdd(bytes_written);
               available = pAudioPipe->binarySpaceAvailable();
               dirty = true;

@@ -21,36 +21,54 @@ static switch_status_t do_stop(switch_core_session_t *session, char* bugname);
 
 
 static void responseHandler(switch_core_session_t* session, const char * json, const char* bugname) {
-	switch_event_t *event;
+	switch_event_t *event = NULL;
 	switch_channel_t *channel = switch_core_session_get_channel(session);
 
 	if (0 == strcmp("vad_detected", json)) {
-		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_VAD_DETECTED);
+		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_VAD_DETECTED) != SWITCH_STATUS_SUCCESS || !event) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "failed to create event subclass %s\n", TRANSCRIBE_EVENT_VAD_DETECTED);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "google");
 	}
 	else if (0 == strcmp("end_of_utterance", json)) {
-		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_END_OF_UTTERANCE);
+		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_END_OF_UTTERANCE) != SWITCH_STATUS_SUCCESS || !event) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "failed to create event subclass %s\n", TRANSCRIBE_EVENT_END_OF_UTTERANCE);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "google");
 	}
 	else if (0 == strcmp("end_of_transcript", json)) {
-		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_END_OF_TRANSCRIPT);
+		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_END_OF_TRANSCRIPT) != SWITCH_STATUS_SUCCESS || !event) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "failed to create event subclass %s\n", TRANSCRIBE_EVENT_END_OF_TRANSCRIPT);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "google");
 	}
 	else if (0 == strcmp("start_of_transcript", json)) {
-		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_START_OF_TRANSCRIPT);
+		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_START_OF_TRANSCRIPT) != SWITCH_STATUS_SUCCESS || !event) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "failed to create event subclass %s\n", TRANSCRIBE_EVENT_START_OF_TRANSCRIPT);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "google");
 	}
 	else if (0 == strcmp("max_duration_exceeded", json)) {
-		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
+		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED) != SWITCH_STATUS_SUCCESS || !event) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "failed to create event subclass %s\n", TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "google");
 	}
 	else if (0 == strcmp("no_audio", json)) {
-		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
+		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_NO_AUDIO_DETECTED) != SWITCH_STATUS_SUCCESS || !event) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "failed to create event subclass %s\n", TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "google");
 	}
@@ -64,7 +82,10 @@ static void responseHandler(switch_core_session_t* session, const char * json, c
 		}else{
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "unable to create play inturrupt event \n");
 		}
-		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_PLAY_INTERRUPT);
+		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_PLAY_INTERRUPT) != SWITCH_STATUS_SUCCESS || !event) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "failed to create event subclass %s\n", TRANSCRIBE_EVENT_PLAY_INTERRUPT);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "google");
 	}
@@ -83,10 +104,16 @@ static void responseHandler(switch_core_session_t* session, const char * json, c
     		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_RESULTS);
     }
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "%s json payload: %s.\n", bugname ? bugname : "google_transcribe", json);
+		if (!event) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "failed to create event subclass %s\n",
+				error ? TRANSCRIBE_EVENT_ERROR : TRANSCRIBE_EVENT_RESULTS);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "google");
 		switch_event_add_body(event, "%s", json);
 	}
+	if (!event) return;
 	if (bugname) switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "media-bugname", bugname);
 	switch_event_fire(&event);
 }
@@ -300,8 +327,8 @@ SWITCH_STANDARD_API(transcribe2_function)
 		argc = switch_separate_string(mycmd, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
 	}
 
-	if (zstr(cmd) || 
-      (argc < 2) ||
+	if (zstr(cmd) ||
+      (argc < 2) || !argv[1] ||
       (!strcasecmp(argv[1], "start") && argc < 10) ||
       zstr(argv[0])) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error with command %s %s.\n", cmd, argv[0]);
@@ -368,7 +395,8 @@ SWITCH_STANDARD_API(transcribe_function)
 		argc = switch_separate_string(mycmd, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
 	}
 
-	if (zstr(cmd) || 
+	if (zstr(cmd) ||
+      (argc < 2) || !argv[1] ||
       (!strcasecmp(argv[1], "stop") && argc < 2) ||
       (!strcasecmp(argv[1], "start") && argc < 3) ||
       zstr(argv[0])) {
@@ -477,7 +505,6 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_transcribe_shutdown)
 	switch_event_free_subclass(TRANSCRIBE_EVENT_END_OF_TRANSCRIPT);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_END_OF_UTTERANCE);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_PLAY_INTERRUPT);
 	return SWITCH_STATUS_SUCCESS;
 }

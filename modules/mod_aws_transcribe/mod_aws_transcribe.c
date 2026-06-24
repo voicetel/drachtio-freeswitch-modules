@@ -15,26 +15,38 @@ SWITCH_MODULE_DEFINITION(mod_aws_transcribe, mod_aws_transcribe_load, mod_aws_tr
 static switch_status_t do_stop(switch_core_session_t *session, char* bugname);
 
 static void responseHandler(switch_core_session_t* session, const char * json, const char* bugname) {
-	switch_event_t *event;
+	switch_event_t *event = NULL;
 	switch_channel_t *channel = switch_core_session_get_channel(session);
 
 	if (0 == strcmp("vad_detected", json)) {
-		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_VAD_DETECTED);
+		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_VAD_DETECTED) != SWITCH_STATUS_SUCCESS) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "responseHandler: failed to create subclass %s\n", TRANSCRIBE_EVENT_VAD_DETECTED);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "aws");
 	}
 	else if (0 == strcmp("end_of_transcript", json)) {
-		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_END_OF_TRANSCRIPT);
+		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_END_OF_TRANSCRIPT) != SWITCH_STATUS_SUCCESS) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "responseHandler: failed to create subclass %s\n", TRANSCRIBE_EVENT_END_OF_TRANSCRIPT);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "aws");
 	}
 	else if (0 == strcmp("max_duration_exceeded", json)) {
-		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
+		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED) != SWITCH_STATUS_SUCCESS) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "responseHandler: failed to create subclass %s\n", TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "aws");
 	}
 	else if (0 == strcmp("no_audio", json)) {
-		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
+		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_NO_AUDIO_DETECTED) != SWITCH_STATUS_SUCCESS) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "responseHandler: failed to create subclass %s\n", TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
+			return;
+		}
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "aws");
 	}
@@ -45,18 +57,26 @@ static void responseHandler(switch_core_session_t* session, const char * json, c
       const char* type = cJSON_GetStringValue(cJSON_GetObjectItem(jMessage, "type"));
       if (type && 0 == strcmp(type, "error")) {
         error = 1;
-    		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_ERROR);
+    		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_ERROR) != SWITCH_STATUS_SUCCESS) {
+    			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "responseHandler: failed to create subclass %s\n", TRANSCRIBE_EVENT_ERROR);
+    			cJSON_Delete(jMessage);
+    			return;
+    		}
       }
       cJSON_Delete(jMessage);
     }
     if (!error) {
-    		switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_RESULTS);
+    		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_RESULTS) != SWITCH_STATUS_SUCCESS) {
+    			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "responseHandler: failed to create subclass %s\n", TRANSCRIBE_EVENT_RESULTS);
+    			return;
+    		}
     }
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "json payload: %s.\n", json);
 		switch_channel_event_set_data(channel, event);
 		switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "aws");
 		switch_event_add_body(event, "%s", json);
 	}
+	if (!event) return;
 	if (bugname) switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "media-bugname", bugname);
 	switch_event_fire(&event);
 }
@@ -157,7 +177,8 @@ SWITCH_STANDARD_API(aws_transcribe_function)
 		argc = switch_separate_string(mycmd, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
 	}
 
-	if (zstr(cmd) || 
+	if (zstr(cmd) ||
+      argc < 2 || zstr(argv[1]) ||
       (!strcasecmp(argv[1], "stop") && argc < 2) ||
       (!strcasecmp(argv[1], "start") && argc < 3) ||
       zstr(argv[0])) {

@@ -16,10 +16,13 @@ static switch_status_t do_stop(switch_core_session_t *session, char* bugname);
 
 static void responseHandler(switch_core_session_t* session, 
 	const char* eventName, const char * json, const char* bugname, int finished) {
-	switch_event_t *event;
+	switch_event_t *event = NULL;
 	switch_channel_t *channel = switch_core_session_get_channel(session);
 
-	switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, eventName);
+	if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, eventName) != SWITCH_STATUS_SUCCESS || !event) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "responseHandler failed to create event for subclass %s\n", eventName);
+		return;
+	}
 	switch_channel_event_set_data(channel, event);
 	switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "deepgram");
 	switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-session-finished", finished ? "true" : "false");
@@ -128,7 +131,8 @@ SWITCH_STANDARD_API(dg_transcribe_function)
 		argc = switch_separate_string(mycmd, ' ', argv, (sizeof(argv) / sizeof(argv[0])));
 	}
 
-	if (zstr(cmd) || 
+	if (zstr(cmd) ||
+      argc < 2 || zstr(argv[1]) ||
       (!strcasecmp(argv[1], "stop") && argc < 2) ||
       (!strcasecmp(argv[1], "start") && argc < 3) ||
       zstr(argv[0])) {

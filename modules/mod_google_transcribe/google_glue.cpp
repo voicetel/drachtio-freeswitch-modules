@@ -537,13 +537,20 @@ extern "C" {
 
       switch_channel_t *channel = switch_core_session_get_channel(session);
       auto read_codec = switch_core_session_get_read_codec(session);
+      if (!read_codec || !read_codec->implementation) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+          "google_speech_session_init: no read codec/implementation available\n");
+        return SWITCH_STATUS_FALSE;
+      }
       uint32_t sampleRate = read_codec->implementation->actual_samples_per_second;
       struct cap_cb *cb;
       int err;
 
       cb =(struct cap_cb *) switch_core_session_alloc(session, sizeof(*cb));
       strncpy(cb->sessionId, switch_core_session_get_uuid(session), MAX_SESSION_ID);
+      cb->sessionId[MAX_SESSION_ID] = '\0';
       strncpy(cb->bugname, bugname, MAX_BUG_LEN);
+      cb->bugname[MAX_BUG_LEN] = '\0';
       cb->got_end_of_utterance = 0;
       cb->wants_single_utterance = single_utterance;
       if (play_file != NULL){
@@ -556,6 +563,10 @@ extern "C" {
         if (0 != err) {
            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "%s: Error initializing resampler: %s.\n",
                                  switch_channel_get_name(channel), speex_resampler_strerror(err));
+          if (cb->resampler) {
+            speex_resampler_destroy(cb->resampler);
+            cb->resampler = NULL;
+          }
           return SWITCH_STATUS_FALSE;
         }
       } else {

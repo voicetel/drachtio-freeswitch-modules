@@ -51,6 +51,10 @@ int AudioPipe::lws_callback(struct lws *wsi,
           unsigned char **p = (unsigned char **)in, *end = (*p) + len;
           char b[256];
           memset(b, 0, sizeof(b));
+          if (apiKey.length() + 7 > sizeof(b)) {
+            lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_APPEND_HANDSHAKE_HEADER api key too long, max %lu\n", sizeof(b) - 7);
+            return -1;
+          }
           strcpy(b,"Token ");
           strcpy(b + 6, apiKey.c_str());
 
@@ -89,7 +93,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
           ap->m_callback(ap->m_uuid.c_str(), AudioPipe::CONNECT_SUCCESS, NULL,  ap->isFinished());
         }
         else {
-          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_ESTABLISHED %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_ESTABLISHED unable to find wsi %p..\n", wsi);
         }
       }      
       break;
@@ -97,7 +101,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
       {
         AudioPipe* ap = *ppAp;
         if (!ap) {
-          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CLOSED %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CLOSED unable to find wsi %p..\n", wsi);
           return 0;
         }
         if (ap->m_state == LWS_CLIENT_DISCONNECTING) {
@@ -126,7 +130,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
       {
         AudioPipe* ap = *ppAp;
         if (!ap) {
-          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE unable to find wsi %p..\n", wsi);
           return 0;
         }
 
@@ -185,7 +189,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
       {
         AudioPipe* ap = *ppAp;
         if (!ap) {
-          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE %s unable to find wsi %p..\n", ap->m_uuid.c_str(), wsi); 
+          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE unable to find wsi %p..\n", wsi);
           return 0;
         }
 
