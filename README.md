@@ -1,53 +1,68 @@
-**This fork (voicetel/drachtio-freeswitch-modules) is actively maintained by VoiceTel as of 2026-05.**
+# drachtio-freeswitch-modules (VoiceTel fork)
 
-The upstream drachtio repo is in preservation mode. We picked up active
-maintenance for the modules we ship in production (primarily
-`mod_audio_fork`); patches against this fork are accepted via the
-voicetel/drachtio-freeswitch-modules tracker. Pull requests against
-upstream drachtio/drachtio-freeswitch-modules will not be answered.
+A fork of [drachtio/drachtio-freeswitch-modules](https://github.com/drachtio/drachtio-freeswitch-modules).
 
-For an alternative that is also actively maintained but under a different
-(dual-licensing) scheme, see [jambonz/freeswitch-modules](https://github.com/jambonz/freeswitch-modules):
+**VoiceTel actively maintains only a small subset of this repository** — the four
+streaming speech-to-text modules we ship in production. Everything else is
+inherited from upstream and kept **as-is, unmaintained**.
 
-- **AGPL-3 for general usage.**
-- **MIT for use with [jambonz](https://jambonz.org) installs <ins>only</ins>.**
+## Maintained modules
 
-# drachtio-freeswitch-modules
+These are the only modules VoiceTel patches, builds, and verifies:
 
-An open-source collection of freeswitch modules, primarily built for for use with [drachtio](https://drachtio.org) applications utilizing [drachtio-fsrmf](https://www.npmjs.com/package/drachtio-fsmrf), but generally usable and useful with generic freeswitch applications.  These modules have beeen tested with Freeswitch version 1.8.
+| Module | Transport | Vendor |
+|---|---|---|
+| [`mod_deepgram_transcribe`](modules/mod_deepgram_transcribe/README.md) | libwebsockets | Deepgram |
+| [`mod_google_transcribe`](modules/mod_google_transcribe/README.md) | gRPC | Google Cloud Speech-to-Text |
+| [`mod_aws_transcribe`](modules/mod_aws_transcribe/README.md) | HTTP/2 event-stream | AWS Transcribe streaming |
+| [`mod_azure_transcribe`](modules/mod_azure_transcribe/README.md) | push-stream | Microsoft Cognitive Services Speech |
 
-#### [mod_audio_fork](modules/mod_audio_fork/README.md)
-A Freeswitch module that attaches a bug to a media server endpoint and streams L16 audio via websockets to a remote server. The audio is never stored to disk locally on the media server, making it ideal for "no data at rest" type of applications.  This module also supports receiving media from the server to play back to the caller, enabling the creation of full-fledged IVR or dialog-type applications.
+Each attaches a media bug to a channel and streams L16 audio to the vendor,
+returning transcripts as FreeSWITCH custom events.
 
-#### [mod_google_tts](modules/mod_google_tts/README.md)
-A tts provider module that integrates with Google Cloud Text-to-Speech API and integrates into freeswitch's TTS framework (i.e., usable with the mod_dptools 'speak' application)
+## Everything else
 
-#### [mod_google_transcribe](modules/mod_google_transcribe/README.md)
-Adds a Freeswitch API call to start (or stop) real-time transcription on a Freeswitch channel using Google Cloud Speech-to-Text API.
+All other modules in `modules/` (including `mod_audio_fork`, `mod_google_tts`,
+`mod_dialogflow`, `mod_aws_lex`, and the rest) are inherited from upstream and
+are **not maintained here**. They are left untouched for reference; we do not
+build, test, or fix them.
 
-#### [mod_dialogflow](modules/mod_dialogflow/README.md)
-Adds a Freeswitch API to start a Google Dialogflow agent on a Freeswitch channel.
+## Building
 
-#### [mod_aws_lex](modules/mod_aws_lex/README.md)
-Adds Freeswitch APIs call to integrate with aws lex v2 apis.
+These are FreeSWITCH loadable modules — they build **inside the FreeSWITCH
+source tree**, not standalone. There is no top-level build in this repo.
 
-#### [mod_aws_transcribe](modules/mod_aws_transcribe/README.md)
-Adds a Freeswitch API call to start (or stop) real-time transcription on a Freeswitch channel using AWS streaming transcription (HTTP/2 based).
+The four maintained modules are verified to compile, link, and load in
+**FreeSWITCH 1.10.12**. Each needs its vendor SDK present at build time:
 
+- `mod_deepgram_transcribe` — libwebsockets
+- `mod_google_transcribe` — gRPC + the Google Cloud Speech protobuf stubs
+- `mod_aws_transcribe` — AWS SDK for C++ (`transcribestreaming`)
+- `mod_azure_transcribe` — Microsoft Cognitive Services Speech SDK
 
-# Installation
+At runtime each module reads its credentials from channel variables or
+environment (see the module's own README).
 
-These modules have dependencies that require a custom version of freeswitch to be built that has support for [grpc](https://github.com/grpc/grpc) (if any of the google modules are built) and [libwebsockets](https://libwebsockets.org). Specifically, mod_google_tts, mod_google_transcribe and mod_dialogflow require grpc, and mod_audio_fork requires libwebsockets.
+## Tests
 
-#### Building from source
-[This ansible role](https://github.com/davehorton/ansible-role-fsmrf) can be used to build a freeswitch 1.8 with support for these modules.  Even if you don't want to use ansible for some reason, the [task files](https://github.com/davehorton/ansible-role-fsmrf/tree/master/tasks), and the [patchfiles](https://github.com/davehorton/ansible-role-fsmrf/tree/master/files) should let you work out how to build it yourself manually or through your preferred automation (but why not just use ansible!)
+`tests/` contains host-side unit tests for the FreeSWITCH-independent logic that
+can be exercised without the full FreeSWITCH tree or the vendor SDKs:
 
-> Note: that ansible role assumes you are building on Debian 9 (stretch).
+```sh
+make -C tests          # build + run
+make -C tests coverage # + gcov line coverage
+```
 
-#### Using docker
+Module glue that depends on the FreeSWITCH runtime and live vendor streams is
+not host-testable and is verified by building/loading inside FreeSWITCH.
 
-`docker pull drachtio/drachtio-freeswitch-mrf:v1.10.1-full` to get a docker image containing all of the above modules with the exception of mod_aws_transcribe.
+## Contributing
 
-## Configuring
+Patches to the **maintained modules** are accepted via the
+[voicetel/drachtio-freeswitch-modules](https://github.com/voicetel/drachtio-freeswitch-modules)
+tracker. Issues or PRs against the unmaintained modules, or against upstream
+drachtio, will not be actioned here.
 
-The three modules that access google services (mod_google_tts, mod_google_transcribe, and mod_dialogflow) require a JSON service key file to be installed on the Freeswitch server, and the environment variable named "GOOGLE_APPLICATION_CREDENTIALS" must point to that file location.
+## License
+
+See [LICENSE](LICENSE).
