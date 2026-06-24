@@ -4,6 +4,7 @@
 #include <string>
 #include <mutex>
 #include <thread>
+#include <memory>
 #include <list>
 #include <algorithm>
 #include <functional>
@@ -200,23 +201,22 @@ namespace {
             break;
             case AudioPipe::CONNECT_FAIL:
             {
-              // first thing: we can no longer access the AudioPipe
+              // The AudioPipe is NOT cleared here; it stays valid until the reaper
+              // deletes it during cleanup. fork_frame gates on the connection state,
+              // so it will not use a failed pipe.
               std::stringstream json;
               json << "{\"reason\":\"" << message << "\"}";
-              tech_pvt->pAudioPipe = nullptr;
               tech_pvt->responseHandler(session, EVENT_CONNECT_FAIL, (char *) json.str().c_str());
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "connection failed: %s\n", message);
             }
             break;
             case AudioPipe::CONNECTION_DROPPED:
-              // first thing: we can no longer access the AudioPipe
-              tech_pvt->pAudioPipe = nullptr;
+              // pipe stays valid until the reaper; fork_frame gates on state.
               tech_pvt->responseHandler(session, EVENT_DISCONNECT, NULL);
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "connection dropped from far end\n");
             break;
             case AudioPipe::CONNECTION_CLOSED_GRACEFULLY:
-              // first thing: we can no longer access the AudioPipe
-              tech_pvt->pAudioPipe = nullptr;
+              // pipe stays valid until the reaper; fork_frame gates on state.
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "connection closed gracefully\n");
             break;
             case AudioPipe::MESSAGE:
@@ -292,7 +292,37 @@ namespace {
     return SWITCH_STATUS_SUCCESS;
   }
 
+  // Hand the AudioPipe off to a detached thread that closes the connection,
+  // waits for the lws CLOSED to be signalled, then deletes it (via the
+  // shared_ptr destructor). Must be called with tech_pvt->mutex held and only
+  // after the media bug has been removed, so no media-bug thread can still touch
+  // the pipe. sessionId/id are captured BY VALUE so the thread never dereferences
+  // tech_pvt after this returns (tech_pvt lives in the session pool and may be
+  // freed once the session tears down).
+  static void reaper(private_t *tech_pvt) {
+    std::shared_ptr<AudioPipe> pAp((AudioPipe *) tech_pvt->pAudioPipe);
+    tech_pvt->pAudioPipe = nullptr;
+
+    std::string sessionId(tech_pvt->sessionId);
+    uint32_t id = tech_pvt->id;
+    std::thread t([pAp, sessionId, id] {
+      pAp->close();         // no-op unless still connected
+      pAp->waitForClose();  // block until the lws CLOSED/FAIL is signalled
+      switch_log_printf(SWITCH_CHANNEL_UUID_LOG(sessionId.c_str()), SWITCH_LOG_DEBUG,
+        "(%u) audio pipe closed and reaped\n", id);
+      // pAp goes out of scope here -> AudioPipe deleted
+    });
+    t.detach();
+  }
+
   void destroy_tech_pvt(private_t* tech_pvt) {
+    // Safety net for paths that never reached the reaper (e.g. an init error
+    // after the AudioPipe was created but before it ever connected). If the
+    // reaper ran, tech_pvt->pAudioPipe is already null and this is a no-op.
+    if (tech_pvt->pAudioPipe) {
+      delete (AudioPipe *) tech_pvt->pAudioPipe;
+      tech_pvt->pAudioPipe = nullptr;
+    }
     /* destroy_tech_pvt is called from contexts where the
      * switch_core_session_t* may already be in teardown (post-
      * media-bug-detach), so we don't take it as a parameter and
@@ -502,7 +532,10 @@ extern "C" {
     }
 
     if (pAudioPipe && text) pAudioPipe->bufferForSending(text);
-    if (pAudioPipe) pAudioPipe->close();
+    // The media bug has been removed above, so fork_frame can no longer run.
+    // Hand the pipe to the reaper, which closes it, waits for the socket to
+    // actually close, then deletes it — no in-callback delete, no use-after-free.
+    if (pAudioPipe) reaper(tech_pvt);
 
     destroy_tech_pvt(tech_pvt);
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "(%u) fork_session_cleanup: connection closed\n", id);

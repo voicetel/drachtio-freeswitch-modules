@@ -87,9 +87,12 @@ int AudioPipe::lws_callback(struct lws *wsi,
         if (ap) {
           ap->m_state = LWS_CLIENT_FAILED;
           ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::CONNECT_FAIL, (char *) in);
+          // terminal: no LWS_CALLBACK_CLIENT_CLOSED follows a failed connect, so
+          // fulfill the close promise here or the reaper would block forever.
+          ap->setClosed();
         }
         else {
-          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CONNECTION_ERROR unable to find wsi %p..\n", wsi); 
+          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CONNECTION_ERROR unable to find wsi %p..\n", wsi);
         }
       }      
       break;
@@ -126,11 +129,12 @@ int AudioPipe::lws_callback(struct lws *wsi,
         }
         ap->m_state = LWS_CLIENT_DISCONNECTED;
 
-        //NB: after receiving any of the events above, any holder of a 
-        //pointer or reference to this object must treat is as no longer valid
-
+        //NB: the AudioPipe is NOT deleted here. The lws service thread may not be
+        //the last user of it (a media-bug thread could still hold it), so deletion
+        //is deferred to the reaper, which deletes only after the media bug has been
+        //removed AND this close has been signalled. We just fulfill the promise.
+        ap->setClosed();
         *ppAp = NULL;
-        delete ap;
       }
       break;
 
@@ -300,7 +304,15 @@ void AudioPipe::processPendingConnects(lws_per_vhost_data *vhd) {
   }
   for (auto it = connects.begin(); it != connects.end(); ++it) {
     AudioPipe* ap = *it;
-    ap->connect_client(vhd);   
+    if (!ap->connect_client(vhd)) {
+      // synchronous connect failure: no wsi was created, so no CONNECTION_ERROR /
+      // CLOSED callback will follow. Notify and fulfill the close promise so the
+      // reaper can delete the pipe instead of blocking forever.
+      lwsl_err("%s connect_client failed synchronously\n", ap->m_uuid.c_str());
+      ap->m_state = LWS_CLIENT_FAILED;
+      ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::CONNECT_FAIL, (char *) "connect_client failed");
+      ap->setClosed();
+    }
   }
 }
 
@@ -498,7 +510,8 @@ AudioPipe::AudioPipe(const char* uuid, const char* host, unsigned int port, cons
   m_uuid(uuid), m_host(host), m_port(port), m_path(path), m_sslFlags(sslFlags),
   m_audio_buffer_min_freespace(minFreespace), m_audio_buffer_max_len(bufLen), m_gracefulShutdown(false),
   m_audio_buffer_write_offset(LWS_PRE), m_recv_buf(nullptr), m_recv_buf_ptr(nullptr), m_bugname(bugname),
-  m_state(LWS_CLIENT_IDLE), m_wsi(nullptr), m_vhd(nullptr), m_callback(callback) {
+  m_state(LWS_CLIENT_IDLE), m_wsi(nullptr), m_vhd(nullptr), m_callback(callback),
+  m_closeSignaled(false) {
 
   if (username && password) {
     m_username.assign(username);
@@ -564,4 +577,20 @@ void AudioPipe::close() {
 void AudioPipe::do_graceful_shutdown() {
   m_gracefulShutdown = true;
   addPendingWrite(this);
+}
+
+void AudioPipe::setClosed() {
+  // set-once: fulfill the promise exactly once no matter which terminal path runs
+  bool expected = false;
+  if (m_closeSignaled.compare_exchange_strong(expected, true)) {
+    m_promise.set_value();
+  }
+}
+
+void AudioPipe::waitForClose() {
+  // blocks until the connection is terminally closed (CLOSED / CONNECT_FAIL).
+  // Unbounded by design: deleting before the lws thread is done with this object
+  // would be a use-after-free, so we never time out and delete early.
+  std::future<void> f = m_promise.get_future();
+  f.wait();
 }

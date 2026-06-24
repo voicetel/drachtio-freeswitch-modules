@@ -8,6 +8,7 @@
 #include <queue>
 #include <unordered_map>
 #include <thread>
+#include <future>
 
 #include <libwebsockets.h>
 
@@ -84,6 +85,13 @@ public:
 
   void close() ;
 
+  // Promise-based close signalling. The lws CLOSED / CONNECT_FAIL paths call
+  // setClosed() (set-once); the reaper blocks in waitForClose() before deleting
+  // the AudioPipe, so the object always outlives any lws-thread use of it.
+  // This replaces the previous (racy) delete-inside-the-lws-callback model.
+  void setClosed();
+  void waitForClose();
+
   // no default constructor or copying
   AudioPipe() = delete;
   AudioPipe(const AudioPipe&) = delete;
@@ -144,6 +152,10 @@ private:
   std::string m_password;
   /* cross-thread flag (written by graceful-shutdown path, read by lws callback) */
   std::atomic<bool> m_gracefulShutdown;
+  /* set-once guard so the close promise is fulfilled exactly once regardless of
+     which terminal path (graceful close, far-end drop, or connect failure) runs */
+  std::atomic<bool> m_closeSignaled;
+  std::promise<void> m_promise;
 };
 
 #endif
