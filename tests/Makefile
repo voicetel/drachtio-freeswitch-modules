@@ -6,7 +6,12 @@
 #
 #   make            # build + run tests
 #   make coverage   # build + run + gcov; prints HOST_COVERAGE=<pct>%
+#   make sanitize   # build + run under AddressSanitizer + UndefinedBehaviorSanitizer
 #   make clean
+#
+# NOTE: `sanitize` exercises only the FreeSWITCH-independent units. True ASan/TSan
+# of the modules' threading needs a sanitizer build of the module + a live call
+# (see SANITIZERS.md) — it cannot be done from this host harness.
 #
 # The repo's quality gate parses the HOST_COVERAGE line. This coverage figure is
 # for the host-testable units ONLY — it is NOT repo-wide or module coverage.
@@ -26,10 +31,24 @@ TESTS     = test_base64 test_simple_buffer
 BINS      = $(addprefix $(BUILD)/,$(TESTS))
 COV_SRCS  = base64.hpp simple_buffer.h
 
-.PHONY: test coverage clean
+.PHONY: test coverage sanitize clean
 
 test: $(BINS)
 	@set -e; for b in $(BINS); do echo "== $$b =="; ./$$b; done
+
+# AddressSanitizer + UndefinedBehaviorSanitizer (+ leak detection) on the
+# host-testable units. Built separately (no coverage flags) so the sanitizer
+# runtime isn't perturbed by gcov instrumentation.
+SANFLAGS = -fsanitize=address,undefined -fno-omit-frame-pointer
+sanitize: | $(BUILD)
+	@set -e; \
+	$(CXX) -std=c++11 -g -O1 $(SANFLAGS) -I$(AUDIOFORK) -o $(BUILD)/test_base64_san test_base64.cpp; \
+	$(CXX) -std=c++11 -g -O1 $(SANFLAGS) -I$(DEEPGRAM) -o $(BUILD)/test_simple_buffer_san test_simple_buffer.cpp; \
+	echo "== ASan/UBSan: test_base64 =="; \
+	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 $(BUILD)/test_base64_san; \
+	echo "== ASan/UBSan: test_simple_buffer =="; \
+	ASAN_OPTIONS=detect_leaks=1 UBSAN_OPTIONS=print_stacktrace=1 $(BUILD)/test_simple_buffer_san; \
+	echo "ASan/UBSan: clean (no sanitizer errors)"
 
 $(BUILD):
 	@mkdir -p $(BUILD)
