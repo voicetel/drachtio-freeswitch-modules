@@ -2,10 +2,10 @@
 
 A fork of [drachtio/drachtio-freeswitch-modules](https://github.com/drachtio/drachtio-freeswitch-modules).
 
-**VoiceTel actively maintains only a small subset of this repository** — the
-streaming speech-to-text modules and `mod_audio_fork`, which we ship in
-production. Everything else is inherited from upstream and kept **as-is,
-unmaintained**.
+**VoiceTel actively maintains only a small subset of this repository** — the four
+streaming speech-to-text modules, which we ship in production, plus
+`mod_audio_fork`, which we maintain but do **not** ship or use ourselves.
+Everything else is inherited from upstream and kept **as-is, unmaintained**.
 
 See **[CHANGELOG.md](CHANGELOG.md)** for everything changed since VoiceTel took
 over maintenance, and **[docs/TESTING.md](docs/TESTING.md)** for how it's tested.
@@ -26,9 +26,11 @@ L16 audio to the vendor, returning transcripts as FreeSWITCH custom events:
 
 **Audio streaming** — [`mod_audio_fork`](modules/mod_audio_fork/README.md):
 streams L16 audio over WebSockets (libwebsockets) to your own server, with
-optional playback injection back into the call. Hardened for memory safety,
-thread-safety, input validation, and correct connection lifecycle (no
-use-after-free on disconnect); verified to build and load in FreeSWITCH 1.10.12.
+optional playback injection back into the call. **VoiceTel maintains this module
+but does not ship or use it** (our production audio streaming uses a separate
+module). Hardened for memory safety, thread-safety, input validation, and correct
+connection lifecycle (no use-after-free on disconnect); verified to build and
+load in FreeSWITCH 1.10.12.
 
 ## Everything else
 
