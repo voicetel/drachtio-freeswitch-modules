@@ -260,9 +260,8 @@ std::list<AudioPipe*> AudioPipe::pendingConnects;
 std::list<AudioPipe*> AudioPipe::pendingDisconnects;
 std::list<AudioPipe*> AudioPipe::pendingWrites;
 AudioPipe::log_emit_function AudioPipe::logger;
-std::mutex AudioPipe::mapMutex;
-std::unordered_map<std::thread::id, bool> AudioPipe::stopFlags;
-std::queue<std::thread::id> AudioPipe::threadIds;
+std::atomic<bool> AudioPipe::stopRequested{false};
+std::vector<std::thread> AudioPipe::serviceThreads;
 
 
 void AudioPipe::processPendingConnects(lws_per_vhost_data *vhd) {
@@ -386,7 +385,6 @@ void AudioPipe::addPendingWrite(AudioPipe* ap) {
 
 bool AudioPipe::lws_service_thread(unsigned int nServiceThread) {
   struct lws_context_creation_info info;
-  std::thread::id this_id = std::this_thread::get_id();
 
   const struct lws_protocols protocols[] = {
     {
@@ -421,13 +419,7 @@ bool AudioPipe::lws_service_thread(unsigned int nServiceThread) {
   int n;
   do {
     n = lws_service(contexts[nServiceThread], 0);
-  } while (n >= 0 && !stopFlags[this_id]);
-
-  // Cleanup once work is done or stopped
-  {
-      std::lock_guard<std::mutex> lock(mapMutex);
-      stopFlags.erase(this_id);
-  }
+  } while (n >= 0 && !stopRequested.load());
 
   lwsl_notice("AudioPipe::lws_service_thread ending in service thread %d\n", nServiceThread); 
   return true;
@@ -440,23 +432,24 @@ void AudioPipe::initialize(unsigned int nThreads, int loglevel, log_emit_functio
   lws_set_log_level(loglevel, logger);
 
   lwsl_notice("AudioPipe::initialize starting %d threads\n", nThreads); 
+  stopRequested.store(false);
   for (unsigned int i = 0; i < numContexts; i++) {
-    std::lock_guard<std::mutex> lock(mapMutex);
-    std::thread t(&AudioPipe::lws_service_thread, i);
-    stopFlags[t.get_id()] = false;
-    threadIds.push(t.get_id());
-    t.detach();
+    serviceThreads.emplace_back(&AudioPipe::lws_service_thread, i);
   }
 }
 
 bool AudioPipe::deinitialize() {
-  lwsl_notice("AudioPipe::deinitialize\n"); 
-  std::lock_guard<std::mutex> lock(mapMutex);
-  if (!threadIds.empty()) {
-      std::thread::id id = threadIds.front();
-      threadIds.pop();
-      stopFlags[id] = true;
+  lwsl_notice("AudioPipe::deinitialize\n");
+  // Signal every service thread to stop, wake each lws context, and JOIN them
+  // before destroying contexts (no detached threads racing teardown).
+  stopRequested.store(true);
+  for (unsigned int i = 0; i < numContexts; i++) {
+    if (contexts[i]) lws_cancel_service(contexts[i]);
   }
+  for (auto& t : serviceThreads) {
+    if (t.joinable()) t.join();
+  }
+  serviceThreads.clear();
 /*
   do
   {
@@ -470,9 +463,8 @@ bool AudioPipe::deinitialize() {
   for (unsigned int i = 0; i < numContexts; i++)
   {
     lwsl_notice("AudioPipe::deinitialize destroying context %d of %d\n", i + 1, numContexts);
-    lws_context_destroy(contexts[i]);
+    if (contexts[i]) { lws_context_destroy(contexts[i]); contexts[i] = nullptr; }
   }
-  std::this_thread::sleep_for(std::chrono::seconds(2));
   return true;
 }
 

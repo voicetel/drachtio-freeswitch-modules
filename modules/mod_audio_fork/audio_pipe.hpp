@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <thread>
 #include <future>
+#include <vector>
 
 #include <libwebsockets.h>
 
@@ -111,9 +112,11 @@ private:
   static std::list<AudioPipe*> pendingDisconnects;
   static std::list<AudioPipe*> pendingWrites;
 
-  static std::mutex mapMutex;
-  static std::unordered_map<std::thread::id, bool> stopFlags;
-  static std::queue<std::thread::id> threadIds;
+  /* shutdown coordination: deinitialize() sets stopRequested, wakes each lws
+     context, and JOINs the (non-detached) service threads before destroying the
+     contexts, so no service thread races teardown. */
+  static std::atomic<bool> stopRequested;
+  static std::vector<std::thread> serviceThreads;
 
   static AudioPipe* findAndRemovePendingConnect(struct lws *wsi);
   static AudioPipe* findPendingConnect(struct lws *wsi);
