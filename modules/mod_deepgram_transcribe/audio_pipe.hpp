@@ -78,7 +78,11 @@ public:
   void close() ;
   void finish();
   void waitForClose();
-  void setClosed() { m_promise.set_value(); }
+
+  // Promise-based close signalling. The lws CLOSED / CONNECT_FAIL paths call
+  // setClosed() (set-once); the reaper blocks in waitForClose() before deleting
+  // the AudioPipe, so the object always outlives any lws-thread use of it.
+  void setClosed();
   bool isFinished() { return m_finished;}
 
   // no default constructor or copying
@@ -143,6 +147,9 @@ private:
   std::atomic<bool> m_gracefulShutdown;
   std::atomic<bool> m_finished;
   std::string m_bugname;
+  /* set-once guard so the close promise is fulfilled exactly once regardless of
+     which terminal path (graceful close, far-end drop, or connect failure) runs */
+  std::atomic<bool> m_closeSignaled;
   std::promise<void> m_promise;
 };
 

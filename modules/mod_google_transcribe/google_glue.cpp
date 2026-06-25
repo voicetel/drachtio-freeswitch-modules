@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <future>
 #include <memory>
+#include <mutex>
 
 #include <switch.h>
 #include <switch_json.h>
@@ -323,7 +324,12 @@ public:
     m_promise.set_value();
 
   	// Write the first request, containing the config only.
-  	m_streamer->Write(m_request);
+  	// gRPC requires all write-side ops (Write + WritesDone) on a stream to be
+  	// externally serialized; m_write_mutex serializes them across threads.
+  	{
+  	  std::lock_guard<std::mutex> lk(m_write_mutex);
+  	  m_streamer->Write(m_request);
+  	}
 
     // send any buffered audio (only the VAD path ever fills m_audioBuffer)
     int nFrames = m_audioBuffer ? m_audioBuffer->getNumItems() : 0;
@@ -351,6 +357,7 @@ public:
       return true;
     }
     m_request.set_audio_content(data, datalen);
+    std::lock_guard<std::mutex> lk(m_write_mutex);
     bool ok = m_streamer->Write(m_request);
     return ok;
   }
@@ -375,6 +382,7 @@ public:
       cancelConnect();
     }
     else if (!m_writesDone) {
+      std::lock_guard<std::mutex> lk(m_write_mutex);
       m_streamer->WritesDone();
       m_writesDone = true;
     }
@@ -404,6 +412,7 @@ private:
 	StreamingRecognizeRequest m_request;
   bool m_writesDone;
   bool m_connected;
+  std::mutex m_write_mutex;  // serializes all m_streamer write-side ops (Write/WritesDone)
   std::promise<void> m_promise;
   std::unique_ptr<SimpleBuffer> m_audioBuffer;  // lazily allocated; only used on the VAD prebuffer path
 };

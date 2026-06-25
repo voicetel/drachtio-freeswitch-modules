@@ -65,9 +65,12 @@ int AudioPipe::lws_callback(struct lws *wsi,
         if (ap) {
           ap->m_state = LWS_CLIENT_FAILED;
           ap->m_callback(ap->m_uuid.c_str(), AudioPipe::CONNECT_FAIL, (char *) in, ap->isFinished());
+          // terminal: no LWS_CALLBACK_CLIENT_CLOSED follows a failed connect, so
+          // fulfill the close promise here or the reaper would block forever.
+          ap->setClosed();
         }
         else {
-          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CONNECTION_ERROR unable to find wsi %p..\n", wsi); 
+          lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_CONNECTION_ERROR unable to find wsi %p..\n", wsi);
         }
       }      
       break;
@@ -275,7 +278,15 @@ void AudioPipe::processPendingConnects(lws_per_vhost_data *vhd) {
   }
   for (auto it = connects.begin(); it != connects.end(); ++it) {
     AudioPipe* ap = *it;
-    ap->connect_client(vhd);   
+    if (!ap->connect_client(vhd)) {
+      // synchronous connect failure: no wsi was created, so no CONNECTION_ERROR /
+      // CLOSED callback will follow. Notify and fulfill the close promise so the
+      // reaper can delete the pipe instead of blocking forever.
+      lwsl_err("%s connect_client failed synchronously\n", ap->m_uuid.c_str());
+      ap->m_state = LWS_CLIENT_FAILED;
+      ap->m_callback(ap->m_uuid.c_str(), AudioPipe::CONNECT_FAIL, (char *) "connect_client failed", ap->isFinished());
+      ap->setClosed();
+    }
   }
 }
 
@@ -470,8 +481,9 @@ AudioPipe::AudioPipe(const char* uuid, const char* host, unsigned int port, cons
   size_t bufLen, size_t minFreespace, const char* apiKey, notifyHandler_t callback) :
   m_uuid(uuid), m_host(host), m_port(port), m_path(path), m_finished(false),
   m_audio_buffer_min_freespace(minFreespace), m_audio_buffer_max_len(bufLen), m_gracefulShutdown(false),
-  m_audio_buffer_write_offset(LWS_PRE), m_recv_buf(nullptr), m_recv_buf_ptr(nullptr), 
-  m_state(LWS_CLIENT_IDLE), m_wsi(nullptr), m_vhd(nullptr), m_apiKey(apiKey), m_callback(callback) {
+  m_audio_buffer_write_offset(LWS_PRE), m_recv_buf(nullptr), m_recv_buf_ptr(nullptr),
+  m_state(LWS_CLIENT_IDLE), m_wsi(nullptr), m_vhd(nullptr), m_apiKey(apiKey), m_callback(callback),
+  m_closeSignaled(false) {
 
   m_audio_buffer = new uint8_t[m_audio_buffer_max_len];
 }
@@ -532,6 +544,14 @@ void AudioPipe::finish() {
   if (m_finished || m_state != LWS_CLIENT_CONNECTED) return;
   m_finished = true;
   bufferForSending("{\"type\": \"CloseStream\"}");
+}
+
+void AudioPipe::setClosed() {
+  // set-once: fulfill the promise exactly once no matter which terminal path runs
+  bool expected = false;
+  if (m_closeSignaled.compare_exchange_strong(expected, true)) {
+    m_promise.set_value();
+  }
 }
 
 void AudioPipe::waitForClose() {

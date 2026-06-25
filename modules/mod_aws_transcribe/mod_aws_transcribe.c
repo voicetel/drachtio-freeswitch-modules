@@ -141,6 +141,11 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 		return SWITCH_STATUS_FALSE;
 	}
 	if ((status = switch_core_media_bug_add(session, bugname, NULL, capture_callback, pUserData, 0, flags, &bug)) != SWITCH_STATUS_SUCCESS) {
+		/* The bug was never attached, so the channel-private was never set and
+		   do_stop/session_stop can't find the cb. session_init already created the
+		   worker thread + GStreamer, so tear them down here to avoid leaking. */
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Error adding media bug for aws transcribe; cleaning up session.\n");
+		aws_transcribe_session_cleanup(pUserData);
 		return status;
 	}
   switch_channel_set_private(channel, bugname, bug);

@@ -27,6 +27,12 @@
 /* one audio chunk = 320 bytes = 160 samples (20ms) of 16-bit mono PCM at 8kHz */
 #define CHUNKSIZE (320)
 
+/* Default cap on the number of audio frames buffered in m_deqAudio while the
+   HTTP/2 stream to AWS is back-pressured. Frames arrive every ~20ms, so 500
+   frames is ~10s of audio. Overridable via AWS_TRANSCRIBE_MAX_BUFFERED_FRAMES.
+   When the cap is exceeded we drop the OLDEST queued frame(s) (see write()). */
+#define DEFAULT_MAX_BUFFERED_FRAMES (500)
+
 using namespace Aws;
 using namespace Aws::Utils;
 using namespace Aws::Auth;
@@ -67,8 +73,15 @@ public:
 		responseHandler_t responseHandler
   ) : m_sessionId(sessionId), m_bugname(bugname), m_finished(false), m_interim(interim), m_finishing(false), m_connected(false), m_connecting(false),
 	 		m_packets(0), m_responseHandler(responseHandler), m_pStream(nullptr),
+			m_maxBufferedFrames(DEFAULT_MAX_BUFFERED_FRAMES), m_droppedAudioWarned(false),
 			/* prebuffer up to 15 chunks (CHUNKSIZE bytes for 8kHz, 2x for resampled 16kHz) until the stream is connected */
 			m_audioBuffer(CHUNKSIZE * (samples_per_second == 8000 ? 1 : 2), 15) {
+		/* allow operators to tune the back-pressure buffer cap via env var */
+		const char* maxFramesEnv = std::getenv("AWS_TRANSCRIBE_MAX_BUFFERED_FRAMES");
+		if (maxFramesEnv != nullptr) {
+			long v = atol(maxFramesEnv);
+			if (v > 0) m_maxBufferedFrames = (size_t) v;
+		}
 		Aws::String key(awsAccessKeyId);
 		Aws::String secret(awsSecretAccessKey);
 		Aws::Client::ClientConfiguration config;
@@ -209,15 +222,36 @@ public:
       return true;
     }
 
-		std::lock_guard<std::mutex> lk(m_mutex);
-
+		/* HOT PATH: do the heap allocation + copy of the frame BEFORE taking
+		   m_mutex, so we don't contend with the worker thread while holding the
+		   lock. Under the lock we only do the cap check, deque push and notify. */
 		const auto beg = static_cast<const unsigned char*>(data);
 		const auto end = beg + datalen;
 		Aws::Vector<unsigned char> bits { beg, end };
-		m_deqAudio.push_back(bits);
-		m_packets++;
 
-		m_cond.notify_one();
+		{
+			std::lock_guard<std::mutex> lk(m_mutex);
+
+			/* Bounded buffer (drop-oldest). Under HTTP/2 back-pressure the worker
+			   may not be draining m_deqAudio fast enough; rather than grow without
+			   bound (per-call RAM blow-up / OOM) we drop the OLDEST queued frames.
+			   NOTE: this is INTENTIONALLY behavior-changing -- under sustained
+			   congestion we discard audio instead of buffering it indefinitely. */
+			while (m_deqAudio.size() >= m_maxBufferedFrames) {
+				m_deqAudio.pop_front();
+				if (!m_droppedAudioWarned) {
+					m_droppedAudioWarned = true;
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+						"GStreamer::write %p audio buffer exceeded %zu frames (back-pressure); dropping oldest audio. Tune AWS_TRANSCRIBE_MAX_BUFFERED_FRAMES.\n",
+						this, m_maxBufferedFrames);
+				}
+			}
+
+			m_deqAudio.push_back(std::move(bits));
+			m_packets++;
+
+			m_cond.notify_one();
+		}
 
 		return true;
 	}
@@ -279,18 +313,22 @@ public:
 				shutdownInitiated = true;
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::writing disconnect event %p\n", this);
 
-				if (m_pStream) {
-					m_pStream->flush();
-					m_pStream->Close();
+				/* load the atomic pointer once into a local before dereferencing */
+				AudioStream* pStream = m_pStream.load();
+				if (pStream) {
+					pStream->flush();
+					pStream->Close();
 					m_pStream = nullptr;
 				}
 			}
 			else {
+				/* load the atomic pointer once into a local before dereferencing */
+				AudioStream* pStream = m_pStream.load();
 				// send out any queued speech packets
-				while (!m_deqAudio.empty()) {
+				while (pStream && !m_deqAudio.empty()) {
 					Aws::Vector<unsigned char>& bits = m_deqAudio.front();
 					Aws::TranscribeStreamingService::Model::AudioEvent event(std::move(bits));
-					m_pStream->WriteAudioEvent(event);
+					pStream->WriteAudioEvent(event);
 					m_deqAudio.pop_front();
 				}
 			}
@@ -306,7 +344,10 @@ private:
 	std::string m_bugname;
 	std::string  m_region;
 	Aws::UniquePtr<TranscribeStreamingServiceClient> m_client;
-	AudioStream* m_pStream;
+	/* written on the AWS SDK IO thread (OnStreamReady) and cleared on the worker
+	   thread; read/dereferenced on the worker thread. atomic so the pointer
+	   publish/clear is race-free without needing m_mutex around the store. */
+	std::atomic<AudioStream*> m_pStream;
 	StartStreamTranscriptionRequest m_request;
 	StartStreamTranscriptionHandler m_handler;
 	TranscriptEvent m_transcript;
@@ -320,6 +361,8 @@ private:
 	std::mutex m_mutex;
 	std::condition_variable m_cond;
 	std::deque< Aws::Vector<unsigned char> > m_deqAudio;
+	size_t m_maxBufferedFrames;      /* cap on m_deqAudio size; drop-oldest beyond this */
+	bool m_droppedAudioWarned;       /* one-shot warning when we first drop audio */
 	SimpleBuffer m_audioBuffer;
 };
 
@@ -564,6 +607,29 @@ extern "C" {
 		return SWITCH_STATUS_FALSE;
 	}
 	
+	void aws_transcribe_session_cleanup(void *pUserData) {
+		struct cap_cb *cb = (struct cap_cb *) pUserData;
+		if (!cb) return;
+
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+			"aws_transcribe_session_cleanup: tearing down orphaned cb %p (media bug never attached)\n", (void *) cb);
+
+		/* signal the worker thread to stop, then join it. The thread deletes the
+		   GStreamer and clears cb->streamer on exit. */
+		GStreamer* streamer = (GStreamer *) cb->streamer;
+		if (streamer) {
+			streamer->finish();
+		}
+		if (cb->thread) {
+			switch_status_t retval;
+			switch_thread_join(&retval, cb->thread);
+			cb->thread = NULL;
+		}
+
+		/* free resampler/vad (and the GStreamer if, defensively, still present) */
+		killcb(cb);
+	}
+
 	switch_bool_t aws_transcribe_frame(switch_media_bug_t *bug, void* user_data) {
 		switch_core_session_t *session = switch_core_media_bug_get_session(bug);
 		uint8_t data[SWITCH_RECOMMENDED_BUFFER_SIZE];

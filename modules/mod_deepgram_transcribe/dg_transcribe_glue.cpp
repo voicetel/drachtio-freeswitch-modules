@@ -107,15 +107,24 @@ namespace {
 
   static const char* emptyTranscript = "{\"alternatives\":[{\"transcript\":\"\",\"confidence\":0.0,\"words\":[]}]}";
 
+  // Hand the AudioPipe off to a detached thread that closes the connection,
+  // waits for the lws CLOSED to be signalled, then deletes it (via the
+  // shared_ptr destructor). Must be called with tech_pvt->mutex held and only
+  // after the media bug has been removed, so no media-bug thread can still touch
+  // the pipe. sessionId/id are captured BY VALUE so the thread never dereferences
+  // tech_pvt after this returns (tech_pvt lives in the session pool and may be
+  // freed once the session tears down).
   static void reaper(private_t *tech_pvt) {
     std::shared_ptr<deepgram::AudioPipe> pAp;
     pAp.reset((deepgram::AudioPipe *)tech_pvt->pAudioPipe);
     tech_pvt->pAudioPipe = nullptr;
 
-    std::thread t([pAp, tech_pvt]{
+    std::string sessionId(tech_pvt->sessionId);
+    uint32_t id = tech_pvt->id;
+    std::thread t([pAp, sessionId, id]{
       pAp->finish();
       pAp->waitForClose();
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "%s (%u) got remote close\n", tech_pvt->sessionId, tech_pvt->id);
+      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "%s (%u) got remote close\n", sessionId.c_str(), id);
     });
     t.detach();
   }
@@ -305,23 +314,22 @@ namespace {
             break;
             case deepgram::AudioPipe::CONNECT_FAIL:
             {
-              // first thing: we can no longer access the AudioPipe
+              // The AudioPipe is NOT cleared here; it stays valid until the reaper
+              // deletes it during cleanup. dg_transcribe_frame gates on the
+              // connection state, so it will not use a failed pipe.
               std::stringstream json;
               json << "{\"reason\":\"" << message << "\"}";
-              tech_pvt->pAudioPipe = nullptr;
               tech_pvt->responseHandler(session, TRANSCRIBE_EVENT_CONNECT_FAIL, (char *) json.str().c_str(), tech_pvt->bugname, finished);
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "connection failed: %s\n", message);
             }
             break;
             case deepgram::AudioPipe::CONNECTION_DROPPED:
-              // first thing: we can no longer access the AudioPipe
-              tech_pvt->pAudioPipe = nullptr;
+              // pipe stays valid until the reaper; dg_transcribe_frame gates on state.
               tech_pvt->responseHandler(session, TRANSCRIBE_EVENT_DISCONNECT, NULL, tech_pvt->bugname, finished);
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "connection dropped from far end\n");
             break;
             case deepgram::AudioPipe::CONNECTION_CLOSED_GRACEFULLY:
-              // first thing: we can no longer access the AudioPipe
-              tech_pvt->pAudioPipe = nullptr;
+              // pipe stays valid until the reaper; dg_transcribe_frame gates on state.
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "connection closed gracefully\n");
             break;
             case deepgram::AudioPipe::MESSAGE:
@@ -507,8 +515,10 @@ extern "C" {
     if (pAudioPipe) reaper(tech_pvt);
     destroy_tech_pvt(tech_pvt);
     switch_mutex_unlock(tech_pvt->mutex);
-    switch_mutex_destroy(tech_pvt->mutex);
-    tech_pvt->mutex = nullptr;
+    // NB: tech_pvt->mutex was created from the session pool
+    // (switch_core_session_get_pool); it is owned by the pool and freed when the
+    // pool is destroyed. Do NOT switch_mutex_destroy() it here — that would be a
+    // double cleanup.
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) dg_transcribe_session_stop\n", id);
     return SWITCH_STATUS_SUCCESS;
   }

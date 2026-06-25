@@ -178,6 +178,7 @@ public:
 		}
 
 		auto onSessionStopped = [this](const SessionEventArgs& args) {
+			if (m_finished) return;
 			SessionLock lock(m_sessionId.c_str());
 			m_stopped = true;
 			if (lock) {
@@ -186,6 +187,7 @@ public:
 			}
 		};
 		auto onSpeechStartDetected = [this, responseHandler](const RecognitionEventArgs& args) {
+			if (m_finished) return;
 			switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
 			if (psession) {
 				auto sessionId = args.SessionId;
@@ -195,6 +197,7 @@ public:
 			}
 		};
 		auto onSpeechEndDetected = [this, responseHandler](const RecognitionEventArgs& args) {
+			if (m_finished) return;
 			switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
 			if (psession) {
 				auto sessionId = args.SessionId;
@@ -204,6 +207,7 @@ public:
 			}
 		};
 		auto onRecognitionEvent = [this, responseHandler](const SpeechRecognitionEventArgs& args) {
+			if (m_finished) return;
 			SessionLock lock(m_sessionId.c_str());
 			switch_core_session_t* psession = lock.get();
 			if (psession) {
@@ -273,6 +277,7 @@ public:
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer:connect %p connecting to azure speech..\n", this);
 
 		auto onSessionStarted = [this](const SessionEventArgs& args) {
+			if (m_finished) return;
 			m_connected = true;
 			SessionLock lock(m_sessionId.c_str());
 			if (lock) {
@@ -330,6 +335,21 @@ public:
 		if (m_finished) return;
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::finish - calling  StopContinuousRecognitionAsync (%p)\n", this);
 		m_finished = true;
+
+		/* Disconnect every event handler we connected before stopping recognition so that no
+		   late SDK callback can fire on this object while/after it is being torn down. The
+		   handler lambdas capture the raw `this`, and on teardown the owning GStreamer is
+		   deleted right after finish() returns; a callback arriving in that window would
+		   dereference freed memory. DisconnectAll() is safe on a signal with zero callbacks
+		   (e.g. Recognizing when interim==false, or SessionStarted if connect() never ran). */
+		m_recognizer->SessionStopped.DisconnectAll();
+		m_recognizer->SpeechStartDetected.DisconnectAll();
+		m_recognizer->SpeechEndDetected.DisconnectAll();
+		m_recognizer->Recognizing.DisconnectAll();
+		m_recognizer->Recognized.DisconnectAll();
+		m_recognizer->Canceled.DisconnectAll();
+		m_recognizer->SessionStarted.DisconnectAll();
+
 		m_recognizer->StopContinuousRecognitionAsync().get();
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "GStreamer::finish - recognition has completed (%p)\n", this);
 	}
