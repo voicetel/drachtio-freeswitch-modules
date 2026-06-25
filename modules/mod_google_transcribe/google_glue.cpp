@@ -410,8 +410,14 @@ private:
 	std::unique_ptr<Speech::Stub> 	m_stub;
 	std::unique_ptr< grpc::ClientReaderWriterInterface<StreamingRecognizeRequest, StreamingRecognizeResponse> > m_streamer;
 	StreamingRecognizeRequest m_request;
-  bool m_writesDone;
-  bool m_connected;
+  // m_writesDone and m_connected are read/written across the media (frame)
+  // thread, the gRPC read thread, and the cleanup thread without a shared lock
+  // (e.g. writesDone() is called from both the gRPC read thread and cleanup; a
+  // VAD-path connect() on the media thread can run concurrently with cleanup's
+  // writesDone()). They are atomics to make those accesses race-free; a mutex
+  // is avoided because cleanup joins the read thread while it may be writing.
+  std::atomic<bool> m_writesDone;
+  std::atomic<bool> m_connected;
   std::mutex m_write_mutex;  // serializes all m_streamer write-side ops (Write/WritesDone)
   std::promise<void> m_promise;
   std::unique_ptr<SimpleBuffer> m_audioBuffer;  // lazily allocated; only used on the VAD prebuffer path
@@ -419,7 +425,7 @@ private:
 
 static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *obj) {
 	struct cap_cb *cb = (struct cap_cb *) obj;
-	GStreamer* streamer = (GStreamer *) cb->streamer;
+	GStreamer* streamer = (GStreamer *) cb->streamer.load();
 
   bool connected = streamer->waitForConnect();
   if (!connected) {
@@ -649,7 +655,7 @@ extern "C" {
       try {
         streamer = new GStreamer(session, channels, lang, interim, to_rate, sampleRate, single_utterance, separate_recognition, max_alternatives,
          profanity_filter, word_time_offset, punctuation, model, enhanced, hints);
-        cb->streamer = streamer;
+        cb->streamer.store(streamer);
       } catch (std::exception& e) {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "%s: Error initializing gstreamer: %s.\n", 
           switch_channel_get_name(channel), e.what());
@@ -694,7 +700,7 @@ extern "C" {
         }
 
         // close connection and get final responses
-        GStreamer* streamer = (GStreamer *) cb->streamer;
+        GStreamer* streamer = (GStreamer *) cb->streamer.load();
 
         if (streamer) {
           streamer->writesDone();
@@ -705,7 +711,7 @@ extern "C" {
           switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "google_speech_session_cleanup:  GStreamer (%p) read thread completed\n", (void*)streamer);
 
           delete streamer;
-          cb->streamer = NULL;
+          cb->streamer.store(NULL);
         }
 
         if (cb->resampler) {
@@ -732,15 +738,24 @@ extern "C" {
     switch_bool_t google_speech_frame(switch_media_bug_t *bug, void* user_data) {
     	switch_core_session_t *session = switch_core_media_bug_get_session(bug);
     	struct cap_cb *cb = (struct cap_cb *) user_data;
-		  if (cb->streamer && (!cb->wants_single_utterance || !cb->got_end_of_utterance)) {
-        GStreamer* streamer = (GStreamer *) cb->streamer;
+		  // single atomic load of streamer; reused for both the gate and the cast so
+		  // the pointer cannot change between the null-check and the dereference.
+		  GStreamer* streamer = (GStreamer *) cb->streamer.load();
+		  if (streamer && (!cb->wants_single_utterance || !cb->got_end_of_utterance)) {
         uint8_t data[SWITCH_RECOMMENDED_BUFFER_SIZE];
         switch_frame_t frame = {};
         frame.data = data;
         frame.buflen = SWITCH_RECOMMENDED_BUFFER_SIZE;
 
         if (switch_mutex_trylock(cb->mutex) == SWITCH_STATUS_SUCCESS) {
-          while (switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS && !switch_test_flag((&frame), SFF_CNG)) {
+          // Re-read streamer UNDER the lock. google_speech_session_cleanup deletes
+          // the GStreamer and nulls cb->streamer while holding cb->mutex, so the
+          // pointer obtained here stays valid for the whole locked region (the
+          // pre-lock load at the top of the function is only a fast-path hint and
+          // could be stale/freed by a concurrent do_stop). Gating the loop on it
+          // means a concurrent delete is observed as NULL -> no use-after-free.
+          streamer = (GStreamer *) cb->streamer.load();
+          while (streamer && switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS && !switch_test_flag((&frame), SFF_CNG)) {
             if (frame.datalen) {
               if (cb->vad && !streamer->isConnected()) {
                 switch_vad_state_t state = switch_vad_process(cb->vad, (int16_t*) frame.data, frame.samples);

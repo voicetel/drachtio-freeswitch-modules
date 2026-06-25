@@ -251,7 +251,7 @@ struct lws_context *AudioPipe::contexts[] = {
   nullptr, nullptr, nullptr, nullptr, nullptr
 };
 unsigned int AudioPipe::numContexts = 0;
-unsigned int AudioPipe::nchild = 0;
+std::atomic<unsigned int> AudioPipe::nchild{0};
 std::string AudioPipe::protocolName;
 std::mutex AudioPipe::mutex_connects;
 std::mutex AudioPipe::mutex_disconnects;

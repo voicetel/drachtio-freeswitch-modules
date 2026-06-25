@@ -154,6 +154,13 @@ public:
 				m_connected = true;
 
 
+				/* Drain the prebuffer under m_audioBufferMutex (guards m_audioBuffer
+				   only). m_connected is already true above, so write() below takes the
+				   connected path and never re-enters the add()/m_audioBufferMutex path
+				   -- so calling write() while holding this lock is safe even though
+				   std::mutex is non-recursive. write() takes m_mutex (not this lock),
+				   giving a one-way ordering m_audioBufferMutex -> m_mutex (no cycle). */
+				std::lock_guard<std::mutex> lk(m_audioBufferMutex);
 				// send any buffered audio
 				int nFrames = m_audioBuffer.getNumItems();
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got stream ready, %d buffered frames\n", this, nFrames);
@@ -217,6 +224,10 @@ public:
     if (!m_connected) {
       if (datalen % CHUNKSIZE == 0) {
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::write queuing %d bytes\n", datalen);
+        /* guard m_audioBuffer against the SDK-IO drain in OnStreamReady. Hold
+           ONLY m_audioBufferMutex here (never m_mutex), so the pre-connect add
+           path and the drain order one-way (m_audioBufferMutex -> m_mutex). */
+        std::lock_guard<std::mutex> lk(m_audioBufferMutex);
         m_audioBuffer.add(data, datalen);
       }
       return true;
@@ -363,6 +374,14 @@ private:
 	std::deque< Aws::Vector<unsigned char> > m_deqAudio;
 	size_t m_maxBufferedFrames;      /* cap on m_deqAudio size; drop-oldest beyond this */
 	bool m_droppedAudioWarned;       /* one-shot warning when we first drop audio */
+	/* guards m_audioBuffer ONLY. The media thread (write() -> add()) on the
+	   pre-connect path and the SDK-IO thread (OnStreamReady drain) both touch
+	   the SimpleBuffer cursors; this serializes them. The drain holds this lock
+	   while calling write(), but by then m_connected==true so write() takes the
+	   connected path and never re-enters the add()/buffer-locked path -- safe
+	   despite std::mutex being non-recursive. Ordering is one-way
+	   (m_audioBufferMutex -> m_mutex), never the reverse, so there is no cycle. */
+	std::mutex m_audioBufferMutex;
 	SimpleBuffer m_audioBuffer;
 };
 
@@ -374,21 +393,21 @@ static void *SWITCH_THREAD_FUNC aws_transcribe_thread(switch_thread_t *thread, v
 	GStreamer* pStreamer = new GStreamer(cb->sessionId, cb->bugname, cb->channels, cb->lang, cb->interim, cb->samples_per_second, cb->region, cb->awsAccessKeyId, cb->awsSecretAccessKey,
 		cb->responseHandler);
   if (!cb->vad) pStreamer->connect();
-	cb->streamer = pStreamer;
+	cb->streamer.store(pStreamer);
 	pStreamer->processData(); //blocks until done
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcribe_thread: stopping cb %p\n", (void *) cb);
 	delete pStreamer;
-	cb->streamer = nullptr;
+	cb->streamer.store(nullptr);
 	return nullptr;
 }
 
 static void killcb(struct cap_cb* cb) {
 	if (cb) {
-		if (cb->streamer) {
-			GStreamer* p = (GStreamer *) cb->streamer;
+		GStreamer* p = (GStreamer *) cb->streamer.load();
+		if (p) {
 			delete p;
-			cb->streamer = nullptr;
+			cb->streamer.store(nullptr);
 		}
 		if (cb->resampler) {
 				speex_resampler_destroy(cb->resampler);
@@ -574,7 +593,7 @@ extern "C" {
 
 			// close connection and get final responses
 			switch_mutex_lock(cb->mutex);
-			GStreamer* streamer = (GStreamer *) cb->streamer;
+			GStreamer* streamer = (GStreamer *) cb->streamer.load();
 			if (streamer) {
 				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "aws_transcribe_session_stop: finish..%s\n", bugname);
 				streamer->finish();
@@ -616,7 +635,7 @@ extern "C" {
 
 		/* signal the worker thread to stop, then join it. The thread deletes the
 		   GStreamer and clears cb->streamer on exit. */
-		GStreamer* streamer = (GStreamer *) cb->streamer;
+		GStreamer* streamer = (GStreamer *) cb->streamer.load();
 		if (streamer) {
 			streamer->finish();
 		}
@@ -640,7 +659,7 @@ extern "C" {
 		frame.buflen = SWITCH_RECOMMENDED_BUFFER_SIZE;
 
 		if (switch_mutex_trylock(cb->mutex) == SWITCH_STATUS_SUCCESS) {
-			GStreamer* streamer = (GStreamer *) cb->streamer;
+			GStreamer* streamer = (GStreamer *) cb->streamer.load();
 			if (streamer) {
 				/* resampler output buffer, declared once and reused across loop iterations */
 				spx_int16_t out[SWITCH_RECOMMENDED_BUFFER_SIZE];

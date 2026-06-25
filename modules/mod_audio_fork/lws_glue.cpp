@@ -52,7 +52,7 @@ namespace {
   static const char* mySubProtocolName = std::getenv("MOD_AUDIO_FORK_SUBPROTOCOL_NAME") ?
     std::getenv("MOD_AUDIO_FORK_SUBPROTOCOL_NAME") : "audio.drachtio.org";
   static unsigned int nServiceThreads = std::max(1, std::min(requestedNumServiceThreads ? ::atoi(requestedNumServiceThreads) : 1, 5));
-  static unsigned int idxCallCount = 0;
+  static std::atomic<unsigned int> idxCallCount{0};
   static uint32_t playCount = 0;
 
   void processIncomingMessage(private_t* tech_pvt, switch_core_session_t* session, const char* message) {
@@ -122,8 +122,15 @@ namespace {
             struct playout* playout = (struct playout *) malloc(sizeof(struct playout));
             playout->file = (char *) malloc(strlen(szFilePath) + 1);
             strcpy(playout->file, szFilePath);
+            // The playout list is freed by fork_session_cleanup (API thread) under
+            // tech_pvt->mutex; this append runs on the lws service thread. Guard the
+            // list mutation with the same mutex so the linked list never races.
+            // Lock order is session-rwlock (held via SessionLock) -> tech_pvt->mutex,
+            // identical to the cleanup path, so no deadlock cycle is introduced.
+            switch_mutex_lock(tech_pvt->mutex);
             playout->next = tech_pvt->playout;
             tech_pvt->playout = playout;
+            switch_mutex_unlock(tech_pvt->mutex);
 
             jsonFile = cJSON_CreateString(szFilePath);
             cJSON_AddItemToObject(jsonData, "file", jsonFile);

@@ -6,6 +6,10 @@
 
 #include <unistd.h>
 
+#ifdef __cplusplus
+#include <atomic>
+#endif
+
 #define MAX_SESSION_ID (256)
 #define MAX_BUG_LEN (64)
 #define MY_BUG_NAME "google_transcribe"
@@ -44,11 +48,32 @@ struct cap_cb {
 	char sessionId[MAX_SESSION_ID+1];
 	char *base;
   SpeexResamplerState *resampler;
+	/* streamer is read by the media (frame) thread at the gate BEFORE the
+	 * trylock, while cleanup nulls it under cb->mutex after switch_thread_join.
+	 * That gate read is unsynchronized against the cleanup store, so it is a
+	 * lock-free atomic pointer (avoids the cleanup/thread_join deadlock a mutex
+	 * would cause). Touched ONLY from google_glue.cpp (C++); std::atomic<void*>
+	 * is lock-free and same-sized as void*, so the C ABI view and the
+	 * zeroed-alloc layout are unchanged. */
+#ifdef __cplusplus
+	std::atomic<void*> streamer;
+#else
 	void* streamer;
+#endif
 	responseHandler_t responseHandler;
 	switch_thread_t* thread;
   int wants_single_utterance;
+  /* got_end_of_utterance is written by the gRPC read thread and read by the
+   * media (frame) thread with no shared lock. A mutex here would deadlock
+   * (cleanup holds cb->mutex across switch_thread_join vs the read thread), so
+   * it is a lock-free atomic. It is touched ONLY from google_glue.cpp (C++);
+   * the .c view stays a plain int and std::atomic<int> is layout-compatible
+   * with int, so struct size/layout is unchanged. */
+#ifdef __cplusplus
+  std::atomic<int> got_end_of_utterance;
+#else
   int got_end_of_utterance;
+#endif
 	int play_file;
 	switch_vad_t * vad;
 	uint32_t samples_per_second;

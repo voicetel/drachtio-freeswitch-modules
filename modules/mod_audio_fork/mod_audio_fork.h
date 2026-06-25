@@ -7,6 +7,10 @@
 
 #include <unistd.h>
 
+#ifdef __cplusplus
+#include <atomic>
+#endif
+
 #define MY_BUG_NAME "audio_fork"
 #define MAX_BUG_LEN (64)
 #define MAX_SESSION_ID (256)
@@ -49,8 +53,20 @@ struct private_data {
   int  channels;
   unsigned int id;
   int buffer_overrun_notified:1;
-  int audio_paused:1;
-  int graceful_shutdown:1;
+  /* audio_paused and graceful_shutdown are read on the media-bug (fork_frame)
+     thread and written on the API command thread, with no common lock at the
+     read site (the read happens before fork_frame's trylock). Make them atomic
+     so the cross-thread read/write does not race. They are touched ONLY from
+     C++ (lws_glue.cpp); mod_audio_fork.c never references them, so std::atomic<int>
+     (layout-compatible with int) is ABI-safe for the C side of this shared struct.
+     These cannot be :1 bitfields because std::atomic requires a full object. */
+#ifdef __cplusplus
+  std::atomic<int> audio_paused;
+  std::atomic<int> graceful_shutdown;
+#else
+  int audio_paused;
+  int graceful_shutdown;
+#endif
   char initialMetadata[8192];
 };
 

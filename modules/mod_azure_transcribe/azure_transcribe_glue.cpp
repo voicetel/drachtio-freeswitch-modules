@@ -284,7 +284,10 @@ public:
 				auto sessionId = args.SessionId;
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer got session started from microsoft\n");
 
-				// send any buffered audio
+				// send any buffered audio. m_connected is already true above, so the
+				// write() calls below take the push-stream path and never re-enter the
+				// add()/m_audioBufferMutex path, hence holding the lock here is safe.
+				std::lock_guard<std::mutex> lk(m_audioBufferMutex);
 				int nFrames = m_audioBuffer.getNumItems();
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got session started from azure, %d buffered frames\n", this, nFrames);
 				if (nFrames) {
@@ -310,6 +313,7 @@ public:
 		}
 		if (!m_connected) {
       if (datalen % CHUNKSIZE == 0) {
+        std::lock_guard<std::mutex> lk(m_audioBufferMutex);
         m_audioBuffer.add(data, datalen);
       }
       return true;
@@ -376,6 +380,13 @@ private:
 	std::atomic<bool> m_connected;
 	std::atomic<bool> m_connecting;
 	std::atomic<bool> m_stopped;
+	/* guards m_audioBuffer only. The media thread (write() -> add()) and the SDK
+	   SessionStarted callback thread (drain via getNumItems()/getNextChunk())
+	   both touch the non-thread-safe SimpleBuffer. This lock is never held across
+	   a thread join, the reaper, or cb->mutex, and write()'s drain path runs with
+	   m_connected==true (so it never re-enters the add()/buffer-locked path),
+	   so it cannot deadlock. */
+	std::mutex m_audioBufferMutex;
 	SimpleBuffer m_audioBuffer;
 };
 

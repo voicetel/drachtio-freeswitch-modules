@@ -6,6 +6,10 @@
 
 #include <unistd.h>
 
+#ifdef __cplusplus
+#include <atomic>
+#endif
+
 #define MY_BUG_NAME "aws_transcribe"
 #define MAX_BUG_LEN (64)
 #define MAX_SESSION_ID (256)
@@ -30,7 +34,18 @@ struct cap_cb {
   char awsSecretAccessKey[128];
 	uint32_t channels;
   SpeexResamplerState *resampler;
+	/* Published by the worker thread (aws_transcribe_thread) when the GStreamer is
+	   created and cleared when it is destroyed; read by the media-bug frame thread
+	   (aws_transcribe_frame) and the API stop/cleanup thread. The worker writes it
+	   WITHOUT holding cb->mutex, so the mutex alone cannot order those accesses --
+	   the pointer must be atomic. Touched only from C++ (the .c file never reads or
+	   writes cb->streamer), so the atomic type is confined to the C++ translation
+	   unit and the C ABI sees a plain void*. */
+#ifdef __cplusplus
+	std::atomic<void*> streamer;
+#else
 	void* streamer;
+#endif
 	responseHandler_t responseHandler;
 	switch_thread_t* thread;
 	int interim;

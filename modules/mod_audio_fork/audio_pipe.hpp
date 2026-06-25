@@ -100,7 +100,7 @@ public:
 private:
 
   static int lws_callback(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len); 
-  static unsigned int nchild;
+  static std::atomic<unsigned int> nchild;
   static struct lws_context *contexts[];
   static unsigned int numContexts;
   static std::string protocolName;
