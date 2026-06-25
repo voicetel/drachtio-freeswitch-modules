@@ -52,16 +52,30 @@ environment (see the module's own README).
 
 ## Tests
 
-`tests/` contains host-side unit tests for the FreeSWITCH-independent logic that
-can be exercised without the full FreeSWITCH tree or the vendor SDKs:
+Testing is layered (see **[docs/TESTING.md](docs/TESTING.md)** for the full,
+reproducible methodology and how to apply it to other modules):
 
-```sh
-make -C tests          # build + run
-make -C tests coverage # + gcov line coverage
-```
+- **Host unit tests** for FreeSWITCH-independent logic (`base64`, `SimpleBuffer`):
 
-Module glue that depends on the FreeSWITCH runtime and live vendor streams is
-not host-testable and is verified by building/loading inside FreeSWITCH.
+  ```sh
+  make -C tests            # build + run
+  make -C tests coverage   # + gcov line coverage
+  make -C tests sanitize   # + AddressSanitizer/UBSan
+  ```
+
+- **Concurrency soak** of the real `AudioPipe` WebSocket transport under
+  AddressSanitizer + ThreadSanitizer ([tests/soak/](tests/soak/README.md)):
+
+  ```sh
+  docker build -f tests/soak/Dockerfile -t audiopipe-soak .
+  docker run --rm --security-opt seccomp=unconfined audiopipe-soak
+  ```
+
+- **Compile/link/load** of every module is verified inside a FreeSWITCH build.
+
+Module glue that depends on the FreeSWITCH runtime, and the vendor-SDK streaming
+paths, are not host-testable — they need a live-credentials soak
+([tests/SANITIZERS.md](tests/SANITIZERS.md)).
 
 ## Contributing
 
