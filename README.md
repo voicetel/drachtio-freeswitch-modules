@@ -7,6 +7,9 @@ streaming speech-to-text modules and `mod_audio_fork`, which we ship in
 production. Everything else is inherited from upstream and kept **as-is,
 unmaintained**.
 
+See **[CHANGELOG.md](CHANGELOG.md)** for everything changed since VoiceTel took
+over maintenance, and **[docs/TESTING.md](docs/TESTING.md)** for how it's tested.
+
 ## Maintained modules
 
 These are the only modules VoiceTel patches, builds, and verifies.
