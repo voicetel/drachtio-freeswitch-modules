@@ -123,6 +123,10 @@ private:
   static void addPendingConnect(AudioPipe* ap);
   static void addPendingDisconnect(AudioPipe* ap);
   static void addPendingWrite(AudioPipe* ap);
+  /* Remove ap from every pending list under the list mutexes. Called from the
+     destructor so a reaped pipe cannot be dereferenced by the lws service thread
+     (which reads (*it)->m_state under those same mutexes) after it is freed. */
+  static void removeFromPending(AudioPipe* ap);
   static void processPendingConnects(lws_per_vhost_data *vhd);
   static void processPendingDisconnects(lws_per_vhost_data *vhd);
   static void processPendingWrites(void);

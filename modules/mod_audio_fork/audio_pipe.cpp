@@ -409,6 +409,17 @@ void AudioPipe::addPendingWrite(AudioPipe* ap) {
   lws_cancel_service(ap->m_vhd->context);
 }
 
+void AudioPipe::removeFromPending(AudioPipe* ap) {
+  // Each list is processed by the lws service thread under its own mutex
+  // (processPendingConnects/Disconnects/Writes read (*it)->m_state there), so
+  // taking the same mutex here serializes removal with those reads: the pipe is
+  // either still present and read while alive, or already gone — never read after
+  // free. Locks are taken one at a time (never nested), so no lock-order deadlock.
+  { std::lock_guard<std::mutex> guard(mutex_connects);    pendingConnects.remove(ap); }
+  { std::lock_guard<std::mutex> guard(mutex_disconnects); pendingDisconnects.remove(ap); }
+  { std::lock_guard<std::mutex> guard(mutex_writes);      pendingWrites.remove(ap); }
+}
+
 bool AudioPipe::lws_service_thread(unsigned int nServiceThread) {
   struct lws_context_creation_info info;
 
@@ -504,6 +515,9 @@ AudioPipe::AudioPipe(const char* uuid, const char* host, unsigned int port, cons
   m_audio_buffer = new uint8_t[m_audio_buffer_max_len];
 }
 AudioPipe::~AudioPipe() {
+  // Drop any lingering references before freeing so the lws service thread cannot
+  // dereference this pipe after it is gone (see removeFromPending).
+  removeFromPending(this);
   if (m_audio_buffer) delete [] m_audio_buffer;
   if (m_recv_buf) delete [] m_recv_buf;
 }
