@@ -15,6 +15,25 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## v0.5.2 — 2026-06-28 (`7551c4b`, `0925fe1`)
+AudioPipe teardown use-after-free fix (`mod_audio_fork`, `mod_deepgram_transcribe`).
+**[build] [tsan]**
+
+- **The lws service thread reads `(*it)->m_state` for every entry in the pending
+  connect/disconnect/write lists (under each list's mutex), but the reaper could
+  `delete` an AudioPipe still present in `pendingWrites`** — a write queued by the
+  media thread's last `unlockAudioBuffer` just before teardown. Result: a
+  heap-use-after-free read of `m_state` on the lws thread. → `~AudioPipe()` now
+  calls `removeFromPending(this)`, removing the pipe from all three lists under
+  those lists' mutexes, so the read is serialized with the free (present-and-alive,
+  or already-gone — never read after free; locks taken one at a time, no deadlock).
+- Found reproducibly under **ThreadSanitizer** in the structurally-identical
+  `mod_ttsd_transcribe` AudioPipe (a fork of this code, in its own repo); the fix
+  is identical across all three. `mod_audio_fork`'s `tests/soak` (ASan + TSan,
+  200×4 scenarios) stays clean with the fix. It did not reproduce on that soak's
+  `close()`-based reaper (narrower window), so for the in-repo modules this is a
+  defensive backport of a verified fix.
+
 ## v0.5.1 — 2026-06-25 (`65f2a45`)
 Docs only.
 - Added `docs/TESTING.md`: the reproducible 5-layer testing methodology, gotchas,
