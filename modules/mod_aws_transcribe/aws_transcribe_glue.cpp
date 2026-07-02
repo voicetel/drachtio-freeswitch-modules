@@ -7,6 +7,7 @@
 #include <atomic>
 #include <mutex>
 #include <thread>
+#include <chrono>
 #include <condition_variable>
 #include <string>
 #include <sstream>
@@ -328,12 +329,36 @@ public:
 
 	void processData() {
 		bool shutdownInitiated = false;
+		bool requestAborted = false;
 		while (true) {
 			std::unique_lock<std::mutex> lk(m_mutex);
-			m_cond.wait(lk, [&, this] {
+			auto ready = [&, this] {
 				return (!m_deqAudio.empty() && !m_finishing)  || m_transcript.TranscriptHasBeenSet() || m_finished  || (m_finishing && !shutdownInitiated) ||
 					(m_finishing && shutdownInitiated && nullptr != m_pStream.load());
-			});
+			};
+			if (shutdownInitiated) {
+				/* Bounded shutdown: after Close() the final outcome normally
+				   arrives within a second, but on a dead network nothing would
+				   ever wake us. If it is overdue, abort the in-flight HTTP
+				   request -- AWSClient::DisableRequestProcessing() fails the
+				   request at the http-client layer and the SDK then delivers the
+				   error outcome via OnResponseCallback, which sets m_finished
+				   (verified against aws-sdk-cpp source; the client destructor's
+				   RAIICounter wait + executor join back-stop the teardown
+				   regardless). */
+				if (!m_cond.wait_for(lk, std::chrono::seconds(10), ready)) {
+					if (!requestAborted) {
+						requestAborted = true;
+						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+							"GStreamer %p final response overdue 10s after shutdown; aborting in-flight request\n", this);
+						m_client->DisableRequestProcessing();
+					}
+					continue;
+				}
+			}
+			else {
+				m_cond.wait(lk, ready);
+			}
 
 
 			// terminal: the SDK delivered its final outcome; no callbacks remain in flight
@@ -484,6 +509,12 @@ static void *SWITCH_THREAD_FUNC aws_transcribe_thread(switch_thread_t *thread, v
 	}
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcribe_thread: stopping cb %p\n", (void *) cb);
+	/* deleting here is safe even if the SDK's async task is still unwinding
+	   past our OnResponseCallback: ~TranscribeStreamingServiceClient ->
+	   ShutdownSdkClient waits for m_operationsProcessed==0 (the async op holds
+	   an RAIICounter through its full unwind) and then resets the executor,
+	   whose destructor joins any in-flight task thread (verified against
+	   aws-sdk-cpp source: AWSClientAsyncCRTP.h, DefaultExecutor.cpp). */
 	delete pStreamer;
 	cb->streamer.store(nullptr);
 	return nullptr;
