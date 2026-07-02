@@ -212,8 +212,12 @@ public:
 					cJSON_AddStringToObject(json, "type", "error");
 					cJSON_AddStringToObject(json, "error", message.c_str());
 					char* jsonString = cJSON_PrintUnformatted(json);
-					m_responseHandler(psession.get(), jsonString, m_bugname.c_str());
-					free(jsonString);
+					/* cJSON_PrintUnformatted returns NULL on allocation failure and the
+					   response handler's first act is strcmp against the payload */
+					if (jsonString) {
+						m_responseHandler(psession.get(), jsonString, m_bugname.c_str());
+						free(jsonString);
+					}
 					cJSON_Delete(json);
 					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p stream got error response %s : %s\n", this, message.c_str(), exception.c_str());
 				}

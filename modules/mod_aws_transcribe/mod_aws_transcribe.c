@@ -18,6 +18,7 @@ static void responseHandler(switch_core_session_t* session, const char * json, c
 	switch_event_t *event = NULL;
 	switch_channel_t *channel = switch_core_session_get_channel(session);
 
+	if (!json) return;
 	if (0 == strcmp("vad_detected", json)) {
 		if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_VAD_DETECTED) != SWITCH_STATUS_SUCCESS) {
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "responseHandler: failed to create subclass %s\n", TRANSCRIBE_EVENT_VAD_DETECTED);
