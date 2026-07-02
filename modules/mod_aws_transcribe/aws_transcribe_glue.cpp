@@ -75,6 +75,7 @@ public:
 	 		m_packets(0), m_responseHandler(responseHandler), m_pStream(nullptr),
 			m_maxBufferedFrames(DEFAULT_MAX_BUFFERED_FRAMES), m_droppedAudioWarned(false),
 			/* prebuffer up to 15 chunks (CHUNKSIZE bytes for 8kHz, 2x for resampled 16kHz) until the stream is connected */
+			m_prebufChunkSize(CHUNKSIZE * (samples_per_second == 8000 ? 1 : 2)),
 			m_audioBuffer(CHUNKSIZE * (samples_per_second == 8000 ? 1 : 2), 15) {
 		/* allow operators to tune the back-pressure buffer cap via env var */
 		const char* maxFramesEnv = std::getenv("AWS_TRANSCRIBE_MAX_BUFFERED_FRAMES");
@@ -170,7 +171,11 @@ public:
 						do {
 							p = m_audioBuffer.getNextChunk();
 							if (p) {
-								write(p, CHUNKSIZE);
+								/* chunks are m_prebufChunkSize bytes (640 when resampling
+								   to 16k) -- draining CHUNKSIZE (320) sent only the first
+								   half of every prebuffered frame, garbling the leading
+								   audio of every resampled call */
+								write(p, m_prebufChunkSize);
 							}
 						} while (p);
 					}
@@ -407,6 +412,7 @@ private:
 	   despite std::mutex being non-recursive. Ordering is one-way
 	   (m_audioBufferMutex -> m_mutex), never the reverse, so there is no cycle. */
 	std::mutex m_audioBufferMutex;
+	uint32_t m_prebufChunkSize;     /* byte size of each m_audioBuffer chunk */
 	SimpleBuffer m_audioBuffer;
 };
 
