@@ -297,15 +297,19 @@ public:
 
 		auto onSessionStarted = [this](const SessionEventArgs& args) {
 			if (m_finished) return;
-			m_connected = true;
 			SessionLock lock(m_sessionId.c_str());
 			if (lock) {
 				auto sessionId = args.SessionId;
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer got session started from microsoft\n");
 
-				// send any buffered audio. m_connected is already true above, so the
-				// write() calls below take the push-stream path and never re-enter the
-				// add()/m_audioBufferMutex path, hence holding the lock here is safe.
+				/* Drain the prebuffer and only THEN publish m_connected, all under
+				   m_audioBufferMutex; write()'s pre-connect path re-checks the flag
+				   under this same lock, so a media frame can neither reach the push
+				   stream ahead of older prebuffered audio (reorder) nor land in the
+				   prebuffer after this one-shot drain (stranded forever). Write
+				   directly to the push stream -- calling write() here would take
+				   the pre-connect path (flag still false) and self-deadlock on this
+				   non-recursive mutex. */
 				std::lock_guard<std::mutex> lk(m_audioBufferMutex);
 				int nFrames = m_audioBuffer.getNumItems();
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got session started from azure, %d buffered frames\n", this, nFrames);
@@ -314,10 +318,18 @@ public:
 					do {
 						p = m_audioBuffer.getNextChunk();
 						if (p) {
-							write(p, CHUNKSIZE);
+							try {
+								m_pushStream->Write(reinterpret_cast<uint8_t*>(p), CHUNKSIZE);
+							} catch (const std::exception& e) {
+								switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+									"GStreamer %p exception draining prebuffer: %s\n", this, e.what());
+								m_finished = true;
+								break;
+							}
 						}
 					} while (p);
 				}
+				m_connected = true;
 			}
 		};
 		m_recognizer->SessionStarted += onSessionStarted;
@@ -331,11 +343,19 @@ public:
 			return false;
 		}
 		if (!m_connected) {
-      if (datalen % CHUNKSIZE == 0) {
-        std::lock_guard<std::mutex> lk(m_audioBufferMutex);
-        m_audioBuffer.add(data, datalen);
+      std::lock_guard<std::mutex> lk(m_audioBufferMutex);
+      /* re-check under the lock: onSessionStarted publishes m_connected only
+         AFTER draining the prebuffer while holding this same mutex, so a frame
+         is either buffered strictly before the drain (and drained in order) or
+         sent strictly after it -- never reordered around it or stranded in a
+         buffer nobody reads again */
+      if (!m_connected) {
+        if (datalen % CHUNKSIZE == 0) {
+          m_audioBuffer.add(data, datalen);
+        }
+        return true;
       }
-      return true;
+      /* connected while acquiring the lock: fall through to the push stream */
     }
 
     try {
