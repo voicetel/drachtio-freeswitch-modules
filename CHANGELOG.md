@@ -15,6 +15,65 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## v0.6.1 — 2026-07-02
+
+Completes the v0.6.0 review: the shared-lineage AudioPipe fixes ported to
+`mod_audio_fork`, and both aws deferrals resolved against the actual
+aws-sdk-cpp source. **[unit] [build] [tsan]**
+
+- **mod_audio_fork** (5 commits, one per issue — the deepgram v0.6.0 fixes in
+  its identical lws transport):
+  - `close()` racing the WS handshake leaked the pipe/thread/socket forever
+    (reaper blocked in `waitForClose()`); completed via a pending-close flag
+    at ESTABLISHED, same pattern as deepgram/ttsd `finish()`.
+  - Oversized/alloc-failed inbound messages could deliver a truncated tail to
+    the JSON parser as a complete message; unchecked first-fragment malloc;
+    realloc-failure leak with poisoned fragment math.
+  - `~AudioPipe()` `delete[]`d the malloc'd recv buffer; `lws_write` failures
+    hidden by the signed/unsigned comparison.
+  - Multi-context set: per-context pending-list filtering, atomic `contexts[]`
+    slots, NULL-slot guard, and `MOD_AUDIO_FORK_SERVICE_THREADS` capped at 1.
+  - NULL connect-error string streamed into an ostream in the glue.
+- **mod_aws_transcribe — both v0.6.0 deferrals closed, verified against the
+  aws-sdk-cpp source shipped in the build image:**
+  - Shutdown wait is now bounded: if the final outcome is >10s overdue after
+    `Close()`, the worker calls `AWSClient::DisableRequestProcessing()`
+    (public API; fails the in-flight request at the http-client layer), which
+    delivers the error outcome via `OnResponseCallback` and unblocks teardown
+    on dead networks.
+  - The "delete while the SDK unwinds past OnResponseCallback" concern is
+    REFUTED as a bug: `~TranscribeStreamingServiceClient` →
+    `ShutdownSdkClient` waits for `m_operationsProcessed == 0` (each async op
+    holds an RAIICounter through its full unwind) and then resets the
+    executor, whose destructor joins in-flight task threads
+    (`AWSClientAsyncCRTP.h`, `DefaultExecutor.cpp`). Documented at the
+    delete site.
+- The same AudioPipe ports (realloc recovery, allocator mismatch, lws_write,
+  multi-context set, bug-add-failure leak) landed in the
+  `mod_ttsd_transcribe` repo in the same pass.
+
+### Still open (unchanged from v0.6.0, with verdicts)
+- google VAD-path `connect()` on the media thread: **accepted limitation** —
+  a safe fix means redesigning the connect signaling (promise set-once and
+  prebuffer locking both grow new race surfaces) and warrants its own soak
+  cycle; the v0.6.0 keepalive bounds the worst case, and the stall affects
+  only that session's own media processing.
+- Multi-context lws service threads stay capped at 1 everywhere pending a
+  per-context connect-adoption redesign.
+- Live-credential vendor streaming remains unverified (needs real creds).
+
+### Verification
+- **[unit]** `make -C tests coverage`: 9/9 pass, 100% coverage (unchanged units).
+- **[build]** aws + audio_fork rebuilt from the fixed sources and loaded in
+  FreeSWITCH 1.10.12 (Docker, audio_fork added to autoload for the test):
+  `module_exists` = true for all five maintained modules.
+- **[tsan]** `tests/soak` (both AudioPipes) with the ported audio_fork
+  sources: OVERALL PASS, ASan+UBSan+LSan and TSan clean, deepgram reaper
+  200/200. Note: an earlier in-container flakiness investigation showed that
+  manually `load`ing modules into a running containerized FS is unreliable
+  for ANY module (baseline included) — load verification uses the autoload
+  boot path, which is stable.
+
 ## v0.6.0 — 2026-07-02
 
 Full adversarial code review of all four maintained transcribe modules
