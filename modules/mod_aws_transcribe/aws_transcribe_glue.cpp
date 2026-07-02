@@ -444,18 +444,24 @@ static void *SWITCH_THREAD_FUNC aws_transcribe_thread(switch_thread_t *thread, v
 	struct cap_cb *cb = (struct cap_cb *) obj;
 	bool ok = true;
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcribe_thread: starting cb %p\n", (void *) cb);
-	/* new throws std::bad_alloc on failure (never returns null), so no null-check is needed here */
-	GStreamer* pStreamer = new GStreamer(cb->sessionId, cb->bugname, cb->channels, cb->lang, cb->interim, cb->samples_per_second, cb->region, cb->awsAccessKeyId, cb->awsSecretAccessKey,
-		cb->responseHandler);
-  if (!cb->vad) pStreamer->connect();
-	cb->streamer.store(pStreamer);
-	/* a stop/hangup may have arrived while the constructor was running: it
-	   found cb->streamer NULL, had nothing to finish(), and is (or will be)
-	   blocked in switch_thread_join. It sets stop_requested BEFORE loading
-	   cb->streamer and we re-check AFTER publishing it, so between the two
-	   orderings the request can never fall through the crack. */
-	if (cb->stop_requested.load()) pStreamer->finish();
-	pStreamer->processData(); //blocks until done
+	GStreamer* pStreamer = nullptr;
+	try {
+		pStreamer = new GStreamer(cb->sessionId, cb->bugname, cb->channels, cb->lang, cb->interim, cb->samples_per_second, cb->region, cb->awsAccessKeyId, cb->awsSecretAccessKey,
+			cb->responseHandler);
+		if (!cb->vad) pStreamer->connect();
+		cb->streamer.store(pStreamer);
+		/* a stop/hangup may have arrived while the constructor was running: it
+		   found cb->streamer NULL, had nothing to finish(), and is (or will be)
+		   blocked in switch_thread_join. It sets stop_requested BEFORE loading
+		   cb->streamer and we re-check AFTER publishing it, so between the two
+		   orderings the request can never fall through the crack. */
+		if (cb->stop_requested.load()) pStreamer->finish();
+		pStreamer->processData(); //blocks until done
+	} catch (const std::exception& e) {
+		/* an exception escaping a SWITCH_THREAD_FUNC is std::terminate -- the
+		   whole of FreeSWITCH, not just this session */
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "transcribe_thread: cb %p exception: %s\n", (void *) cb, e.what());
+	}
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcribe_thread: stopping cb %p\n", (void *) cb);
 	delete pStreamer;
@@ -638,7 +644,13 @@ extern "C" {
 		// create a thread to service the http/2 connection to aws
 		switch_threadattr_create(&thd_attr, pool);
 		switch_threadattr_stacksize_set(thd_attr, SWITCH_THREAD_STACKSIZE);
-		switch_thread_create(&cb->thread, thd_attr, aws_transcribe_thread, cb, pool);
+		if (switch_thread_create(&cb->thread, thd_attr, aws_transcribe_thread, cb, pool) != SWITCH_STATUS_SUCCESS) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error creating transcribe thread\n");
+			cb->thread = NULL;
+			killcb(cb);  /* frees the already-created resampler/vad; streamer is NULL */
+			status = SWITCH_STATUS_FALSE;
+			goto done;
+		}
 
 		*ppUserData = cb;
 	
