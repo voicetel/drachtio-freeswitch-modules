@@ -1,9 +1,19 @@
 # AudioPipe concurrency soak (ASan + TSan)
 
-A Dockerized concurrency soak of the **real** `mod_audio_fork` `AudioPipe` —
-the WebSocket transport whose lifecycle (connect / stream / far-end drop /
-graceful close / rapid restart / connect-fail / reaper teardown / shutdown) is
-the most concurrency-sensitive code in the maintained modules.
+A Dockerized concurrency soak of the **real** lws `AudioPipe` transports —
+since v0.6.0 it builds and runs BOTH the `mod_audio_fork` pipe and the
+`mod_deepgram_transcribe` pipe (`tests/soak/soak_deepgram.cpp`). The lifecycle
+under test (connect / stream / far-end drop / graceful close / rapid restart /
+connect-fail / reaper teardown / shutdown) is the most concurrency-sensitive
+code in the maintained modules.
+
+The deepgram variant dials TLS unconditionally, so against the plain-ws mock
+every connect terminates via CONNECT_FAIL — it exercises the connect-adoption,
+pre-handshake `finish()`, reaper-promise, and destructor/pending-list surfaces
+(with a 200/200 reaper-completion gate); its receive path is byte-identical to
+the mod_ttsd_transcribe AudioPipe, soaked end-to-end over plain ws in that
+repo. lws-internal logging races are suppressed via `tsan.supp` (library-only
+frames; module frames are never suppressed).
 
 `AudioPipe` depends only on libwebsockets + the C++ stdlib (no FreeSWITCH), so it
 can be driven directly: the real lws service thread, a media-thread writer that

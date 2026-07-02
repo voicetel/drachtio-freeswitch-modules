@@ -4,7 +4,7 @@ A Freeswitch module that attaches a bug to a media server endpoint and streams L
 
 #### Environment variables
 - MOD_AUDIO_FORK_SUBPROTOCOL_NAME - optional, name of the [websocket sub-protocol](https://tools.ietf.org/html/rfc6455#section-1.9) to advertise; defaults to "audio.drachtio.org"
-- MOD_AUDIO_FORK_SERVICE_THREADS - optional, number of libwebsocket service threads to create; these threads handling sending all messages for all sessions.  Defaults to 1, but can be set to as many as 5.
+- MOD_AUDIO_FORK_SERVICE_THREADS - optional, number of libwebsocket service threads to create; these threads handle sending all messages for all sessions. Defaults to 1. Since v0.6.1 values above 1 are capped to 1 (with an error log): multi-context connect adoption is not thread-safe (ThreadSanitizer-verified race in the shared pending-connect list; see CHANGELOG v0.6.0/v0.6.1).
 
 ## API
 

@@ -15,6 +15,17 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## v0.6.3 — 2026-07-02
+Docs only — a docs-vs-code audit found two shipped claims contradicting the
+code after v0.6.1:
+- `modules/mod_audio_fork/README.md` still said `MOD_AUDIO_FORK_SERVICE_THREADS`
+  "can be set to as many as 5"; values above 1 have been capped to 1 since
+  v0.6.1 (multi-context connect adoption is not thread-safe).
+- `tests/soak/README.md` still described the soak as `mod_audio_fork`-only; it
+  has built and run the `mod_deepgram_transcribe` AudioPipe soak as well since
+  v0.6.0 (now documented, including what the TLS-only deepgram variant does and
+  does not exercise, and the lws-only `tsan.supp` suppression).
+
 ## v0.6.2 — 2026-07-02
 Docs only.
 - `docs/TESTING.md`: the Layer-3 load gate no longer recommends `fs_cli -x
