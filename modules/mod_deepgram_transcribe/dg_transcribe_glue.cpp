@@ -372,6 +372,11 @@ namespace {
 
     strncpy(tech_pvt->sessionId, switch_core_session_get_uuid(session), MAX_SESSION_ID);
     tech_pvt->sessionId[MAX_SESSION_ID-1] = '\0';
+    /* previously never populated: every event went out with an empty
+       media-bugname header and the CLOSE-path stop cleared channel-private
+       key "" instead of the key the bug is actually stored under */
+    strncpy(tech_pvt->bugname, bugname ? bugname : MY_BUG_NAME, MAX_BUG_LEN);
+    tech_pvt->bugname[MAX_BUG_LEN] = '\0';
     strncpy(tech_pvt->host, "api.deepgram.com", MAX_WS_URL_LEN);
     tech_pvt->host[MAX_WS_URL_LEN-1] = '\0';
     tech_pvt->port = 443;
@@ -512,7 +517,12 @@ extern "C" {
       
     // close connection and get final responses
     switch_mutex_lock(tech_pvt->mutex);
-    switch_channel_set_private(channel, bugname, NULL);
+    /* the bug is stored under the fixed MY_BUG_NAME key (start_capture), and
+       that is also the key this function looked it up under above -- clearing
+       the caller-supplied bugname instead left a stale bug pointer under
+       MY_BUG_NAME for any custom name, which a later stop/start dereferenced
+       after switch_core_media_bug_remove had already destroyed the bug */
+    switch_channel_set_private(channel, MY_BUG_NAME, NULL);
     if (!channelIsClosing) switch_core_media_bug_remove(session, &bug);
 
     deepgram::AudioPipe *pAudioPipe = static_cast<deepgram::AudioPipe *>(tech_pvt->pAudioPipe);
