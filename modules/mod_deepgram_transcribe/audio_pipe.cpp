@@ -422,13 +422,26 @@ AudioPipe* AudioPipe::findPendingConnect(struct lws *wsi) {
 }
 
 void AudioPipe::addPendingConnect(AudioPipe* ap) {
+  /* a service thread whose lws_create_context failed leaves its slot NULL;
+     round-robin over the live ones instead of dereferencing a dead slot */
+  struct lws_context* ctx = nullptr;
+  for (unsigned int i = 0; i < numContexts && !ctx; i++) {
+    ctx = contexts[nchild++ % numContexts];
+  }
+  if (!ctx) {
+    lwsl_err("%s AudioPipe::addPendingConnect no live lws context, failing connect\n", ap->m_uuid.c_str());
+    ap->m_state = LWS_CLIENT_FAILED;
+    ap->m_callback(ap->m_uuid.c_str(), AudioPipe::CONNECT_FAIL, "no lws context available", ap->isFinished());
+    ap->setClosed();  // keep the reaper's waitForClose() from blocking forever
+    return;
+  }
   {
     std::lock_guard<std::mutex> guard(mutex_connects);
     pendingConnects.push_back(ap);
-    lwsl_debug("%s after adding connect there are %lu pending connects\n", 
+    lwsl_debug("%s after adding connect there are %lu pending connects\n",
       ap->m_uuid.c_str(), pendingConnects.size());
   }
-  lws_cancel_service(contexts[nchild++ % numContexts]);
+  lws_cancel_service(ctx);
 }
 void AudioPipe::addPendingDisconnect(AudioPipe* ap) {
   ap->m_state = LWS_CLIENT_DISCONNECTING;
