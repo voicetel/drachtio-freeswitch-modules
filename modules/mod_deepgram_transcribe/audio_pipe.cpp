@@ -541,7 +541,10 @@ AudioPipe::~AudioPipe() {
   // dereference this pipe after it is gone (see removeFromPending).
   removeFromPending(this);
   if (m_audio_buffer) delete [] m_audio_buffer;
-  if (m_recv_buf) delete [] m_recv_buf;
+  /* m_recv_buf is malloc/realloc'd by the receive path -- it must be free()d,
+     not delete[]d (mismatched allocator is UB and ASan-fatal). Non-null here
+     whenever the pipe dies with a fragmented message still in flight. */
+  if (m_recv_buf) free(m_recv_buf);
 }
 
 void AudioPipe::connect(void) {
