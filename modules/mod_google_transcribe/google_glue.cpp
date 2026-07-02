@@ -115,15 +115,33 @@ public:
     if (!(google_uri = switch_channel_get_variable(channel, "GOOGLE_SPEECH_TO_TEXT_URI"))) {
       google_uri = "speech.googleapis.com";
     }
+		/* HTTP/2 keepalive: without it a silent network partition leaves the
+		   read thread blocked in Read() and cleanup's WritesDone() blocked in
+		   Pluck() with no deadline -- stop/hangup then stalls for the TCP
+		   failure-detection duration (minutes). Pings only while the call is
+		   active; a healthy long-running stream is unaffected. */
+		grpc::ChannelArguments channelArgs;
+		channelArgs.SetInt(GRPC_ARG_KEEPALIVE_TIME_MS, 60000);
+		channelArgs.SetInt(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, 20000);
+		channelArgs.SetInt(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 0);
+
 		if ((var = switch_channel_get_variable(channel, "GOOGLE_APPLICATION_CREDENTIALS"))) {
 			auto channelCreds = grpc::SslCredentials(grpc::SslCredentialsOptions());
 			auto callCreds = grpc::ServiceAccountJWTAccessCredentials(var);
+			if (!callCreds) {
+				/* an invalid JSON key (e.g. the channel var set to a file PATH,
+				   matching the env var convention of the same name) yields a null
+				   shared_ptr, and CompositeChannelCredentials dereferences it with
+				   no guard (grpc v1.60 secure_credentials.cc) -- a segfault the
+				   session_init catch cannot stop. Fail catchably instead. */
+				throw std::invalid_argument("GOOGLE_APPLICATION_CREDENTIALS channel variable is not a valid service-account JSON key (note: unlike the env var, it must contain the key itself, not a file path)");
+			}
 			auto creds = grpc::CompositeChannelCredentials(channelCreds, callCreds);
-			m_channel = grpc::CreateChannel(google_uri, creds);
+			m_channel = grpc::CreateCustomChannel(google_uri, creds, channelArgs);
 		}
 		else {
 			auto creds = grpc::GoogleDefaultCredentials();
-			m_channel = grpc::CreateChannel(google_uri, creds);
+			m_channel = grpc::CreateCustomChannel(google_uri, creds, channelArgs);
 		}
 
   	m_stub = Speech::NewStub(m_channel);
