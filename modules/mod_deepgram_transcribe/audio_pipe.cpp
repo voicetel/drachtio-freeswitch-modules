@@ -55,7 +55,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
     case LWS_CALLBACK_EVENT_WAIT_CANCELLED:
       processPendingConnects(vhd);
       processPendingDisconnects(vhd);
-      processPendingWrites();
+      processPendingWrites(vhd);
       break;
     case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
       {
@@ -338,28 +338,45 @@ void AudioPipe::processPendingConnects(lws_per_vhost_data *vhd) {
 }
 
 void AudioPipe::processPendingDisconnects(lws_per_vhost_data *vhd) {
+  /* Only service pipes owned by THIS thread's context. lws wsi objects are not
+     thread-safe: with MOD_AUDIO_FORK_SERVICE_THREADS > 1 every context has its
+     own service thread, and the only lws call that may cross threads is
+     lws_cancel_service (which is how these lists get drained -- each add wakes
+     the owning pipe's context). Draining another context's entries here would
+     invoke lws_callback_on_writable on a wsi its own thread may be servicing
+     concurrently. Entries for other contexts are left in place for their own
+     thread's wakeup to process. */
   std::list<AudioPipe*> disconnects;
   {
     std::lock_guard<std::mutex> guard(mutex_disconnects);
-    for (auto it = pendingDisconnects.begin(); it != pendingDisconnects.end(); ++it) {
-      if ((*it)->m_state == LWS_CLIENT_DISCONNECTING) disconnects.push_back(*it);
+    for (auto it = pendingDisconnects.begin(); it != pendingDisconnects.end(); ) {
+      AudioPipe* ap = *it;
+      if (ap->m_vhd && ap->m_vhd->context == vhd->context) {
+        if (ap->m_state == LWS_CLIENT_DISCONNECTING) disconnects.push_back(ap);
+        it = pendingDisconnects.erase(it);
+      }
+      else ++it;
     }
-    pendingDisconnects.clear();
   }
   for (auto it = disconnects.begin(); it != disconnects.end(); ++it) {
     AudioPipe* ap = *it;
-    lws_callback_on_writable(ap->m_wsi); 
+    lws_callback_on_writable(ap->m_wsi);
   }
 }
 
-void AudioPipe::processPendingWrites() {
+void AudioPipe::processPendingWrites(lws_per_vhost_data *vhd) {
+  /* per-context filtering: see processPendingDisconnects */
   std::list<AudioPipe*> writes;
   {
     std::lock_guard<std::mutex> guard(mutex_writes);
-    for (auto it = pendingWrites.begin(); it != pendingWrites.end(); ++it) {
-       if ((*it)->m_state == LWS_CLIENT_CONNECTED) writes.push_back(*it);
-    }  
-    pendingWrites.clear();
+    for (auto it = pendingWrites.begin(); it != pendingWrites.end(); ) {
+      AudioPipe* ap = *it;
+      if (ap->m_vhd && ap->m_vhd->context == vhd->context) {
+        if (ap->m_state == LWS_CLIENT_CONNECTED) writes.push_back(ap);
+        it = pendingWrites.erase(it);
+      }
+      else ++it;
+    }
   }
   for (auto it = writes.begin(); it != writes.end(); ++it) {
     AudioPipe* ap = *it;

@@ -123,7 +123,7 @@ private:
   static void removeFromPending(AudioPipe* ap);
   static void processPendingConnects(lws_per_vhost_data *vhd);
   static void processPendingDisconnects(lws_per_vhost_data *vhd);
-  static void processPendingWrites(void);
+  static void processPendingWrites(lws_per_vhost_data *vhd);
   
   bool connect_client(struct lws_per_vhost_data *vhd);
 
