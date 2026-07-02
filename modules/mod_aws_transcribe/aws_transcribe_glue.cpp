@@ -589,7 +589,9 @@ extern "C" {
 		cb->samples_per_second = sampleRate;
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "sample rate of rtp stream is %d\n", samples_per_second);
 		if (sampleRate != 8000) {
-			cb->resampler = speex_resampler_init(1, sampleRate, 16000, SWITCH_RESAMPLE_QUALITY, &err);
+			/* channels, not 1: stereo capture (SMBF_STEREO) delivers interleaved
+			   2-channel frames and the frame path uses the interleaved API */
+			cb->resampler = speex_resampler_init(cb->channels, sampleRate, 16000, SWITCH_RESAMPLE_QUALITY, &err);
 			if (0 != err) {
 				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "%s: Error initializing resampler: %s.\n", 
 							switch_channel_get_name(channel), speex_resampler_strerror(err));
@@ -727,7 +729,10 @@ extern "C" {
 				spx_int16_t out[SWITCH_RECOMMENDED_BUFFER_SIZE];
 				while (switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS && !switch_test_flag((&frame), SFF_CNG)) {
 					if (frame.datalen) {
-						spx_uint32_t out_len = SWITCH_RECOMMENDED_BUFFER_SIZE;
+						/* interleaved API: capacity and counts are in samples PER
+						   CHANNEL; the out[] array holds SWITCH_RECOMMENDED_BUFFER_SIZE
+						   total elements across channels */
+						spx_uint32_t out_len = SWITCH_RECOMMENDED_BUFFER_SIZE / cb->channels;
 						spx_uint32_t in_len = frame.samples;
 						size_t written;
 
@@ -741,11 +746,14 @@ extern "C" {
 						}
 
 						if (cb->resampler) {
-							speex_resampler_process_interleaved_int(cb->resampler, (const spx_int16_t *) frame.data, (spx_uint32_t *) &in_len, &out[0], &out_len);						
-							streamer->write( &out[0], sizeof(spx_int16_t) * out_len);
+							speex_resampler_process_interleaved_int(cb->resampler, (const spx_int16_t *) frame.data, (spx_uint32_t *) &in_len, &out[0], &out_len);
+							/* out_len is per-channel samples; bytes = samples * 2 * channels */
+							streamer->write( &out[0], sizeof(spx_int16_t) * out_len * cb->channels);
 						}
 						else {
-							streamer->write( frame.data, sizeof(spx_int16_t) * frame.samples);
+							/* frame.samples is per-channel (media_bug_read divides by
+							   channel count); frame.datalen is the actual byte count */
+							streamer->write( frame.data, frame.datalen);
 						}
 					}
 				}
