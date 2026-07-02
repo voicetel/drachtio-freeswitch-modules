@@ -153,17 +153,17 @@ public:
 				SessionLock psession(m_sessionId.c_str());
 				if (psession) {
 					m_pStream = &stream;
-					m_connected = true;
 
-
-					/* Drain the prebuffer under m_audioBufferMutex (guards m_audioBuffer
-					   only). m_connected is already true above, so write() below takes the
-					   connected path and never re-enters the add()/m_audioBufferMutex path
-					   -- so calling write() while holding this lock is safe even though
-					   std::mutex is non-recursive. write() takes m_mutex (not this lock),
-					   giving a one-way ordering m_audioBufferMutex -> m_mutex (no cycle). */
+					/* Drain the prebuffer and only THEN publish m_connected, all under
+					   m_audioBufferMutex. write()'s pre-connect path re-checks
+					   m_connected under this same lock, so a media frame can neither
+					   jump ahead of older prebuffered audio into the deque (reorder)
+					   nor land in the prebuffer after this one-shot drain (stranded
+					   forever). Chunks are enqueued directly -- calling write() here
+					   would take the pre-connect path (m_connected still false) and
+					   self-deadlock on this non-recursive mutex. Lock order stays the
+					   documented one-way m_audioBufferMutex -> m_mutex. */
 					std::lock_guard<std::mutex> lk(m_audioBufferMutex);
-					// send any buffered audio
 					int nFrames = m_audioBuffer.getNumItems();
 					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got stream ready, %d buffered frames\n", this, nFrames);
 					if (nFrames) {
@@ -171,14 +171,17 @@ public:
 						do {
 							p = m_audioBuffer.getNextChunk();
 							if (p) {
-								/* chunks are m_prebufChunkSize bytes (640 when resampling
-								   to 16k) -- draining CHUNKSIZE (320) sent only the first
-								   half of every prebuffered frame, garbling the leading
-								   audio of every resampled call */
-								write(p, m_prebufChunkSize);
+								/* m_prebufChunkSize bytes per chunk (640 when resampling
+								   to 16k): draining a fixed CHUNKSIZE sent only the first
+								   half of every prebuffered frame */
+								const unsigned char* beg = reinterpret_cast<const unsigned char*>(p);
+								Aws::Vector<unsigned char> bits { beg, beg + m_prebufChunkSize };
+								std::lock_guard<std::mutex> lk2(m_mutex);
+								m_deqAudio.push_back(std::move(bits));
 							}
 						} while (p);
 					}
+					m_connected = true;
 				}
 				else {
 					/* session already gone: still publish the stream so the worker's
@@ -240,15 +243,22 @@ public:
 			return false;
 		}
     if (!m_connected) {
-      if (datalen % CHUNKSIZE == 0) {
-				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::write queuing %d bytes\n", datalen);
-        /* guard m_audioBuffer against the SDK-IO drain in OnStreamReady. Hold
-           ONLY m_audioBufferMutex here (never m_mutex), so the pre-connect add
-           path and the drain order one-way (m_audioBufferMutex -> m_mutex). */
-        std::lock_guard<std::mutex> lk(m_audioBufferMutex);
-        m_audioBuffer.add(data, datalen);
+      std::lock_guard<std::mutex> lk(m_audioBufferMutex);
+      /* re-check under the lock: OnStreamReady publishes m_connected only
+         AFTER draining the prebuffer while holding this same mutex -- so from
+         here we are either strictly before the drain (buffer the frame; the
+         drain will pick it up in order) or strictly after it (fall through to
+         the deque path). Checking the flag outside the lock let a frame race
+         the drain: enqueued ahead of older prebuffered audio, or added to the
+         prebuffer after its one-shot drain and stranded forever. */
+      if (!m_connected) {
+        if (datalen % CHUNKSIZE == 0) {
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::write queuing %d bytes\n", datalen);
+          m_audioBuffer.add(data, datalen);
+        }
+        return true;
       }
-      return true;
+      /* connected while acquiring the lock: fall through to the deque path */
     }
 
 		/* HOT PATH: do the heap allocation + copy of the frame BEFORE taking
