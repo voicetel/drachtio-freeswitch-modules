@@ -365,12 +365,22 @@ public:
 			else {
 				/* load the atomic pointer once into a local before dereferencing */
 				AudioStream* pStream = m_pStream.load();
-				// send out any queued speech packets
-				while (pStream && !m_deqAudio.empty()) {
-					Aws::Vector<unsigned char>& bits = m_deqAudio.front();
+				/* Send queued speech packets WITHOUT holding m_mutex:
+				   WriteAudioEvent can block under HTTP/2 back-pressure, and the
+				   media-bug thread blocks on m_mutex inside write() -- holding the
+				   lock across the writes turned congestion into a media-thread
+				   stall and made the bounded-deque drop-oldest cap unreachable in
+				   exactly the scenario it exists for. Swap the deque into a local
+				   under the lock, then write lock-free; ordering is preserved
+				   (single worker thread, frames swapped out before any new push). */
+				std::deque< Aws::Vector<unsigned char> > local;
+				if (pStream && !m_deqAudio.empty()) local.swap(m_deqAudio);
+				lk.unlock();
+				while (pStream && !local.empty()) {
+					Aws::Vector<unsigned char>& bits = local.front();
 					Aws::TranscribeStreamingService::Model::AudioEvent event(std::move(bits));
 					pStream->WriteAudioEvent(event);
-					m_deqAudio.pop_front();
+					local.pop_front();
 				}
 			}
 		}
