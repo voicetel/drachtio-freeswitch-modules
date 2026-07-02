@@ -369,16 +369,33 @@ public:
         }
       } while (p);
     }
+    if (!m_prebufStaging.empty()) {
+      /* flush the sub-chunk staging remainder, in order (m_connected is true
+         here, so this takes the direct Write path, any length) */
+      write(m_prebufStaging.data(), (uint32_t) m_prebufStaging.size());
+      m_prebufStaging.clear();
+      m_prebufStaging.shrink_to_fit();
+    }
   }
 
 	bool write(void* data, uint32_t datalen) {
     if (!m_connected) {
-      if (datalen % CHUNKSIZE == 0) {
-        // lazily allocate the prebuffer: only the VAD path writes before connect()
-        if (!m_audioBuffer) {
-          m_audioBuffer.reset(new SimpleBuffer(CHUNKSIZE, PREBUFFER_CHUNKS));
-        }
-        m_audioBuffer->add(data, datalen);
+      // lazily allocate the prebuffer: only the VAD path writes before connect()
+      if (!m_audioBuffer) {
+        m_audioBuffer.reset(new SimpleBuffer(CHUNKSIZE, PREBUFFER_CHUNKS));
+      }
+      /* SimpleBuffer stores fixed CHUNKSIZE slices and its add() rejects
+         other lengths -- non-multiple frames (30ms-ptime codecs, resampler
+         output on the VAD path) were dropped wholesale. Stage bytes and feed
+         whole chunks; connect() flushes the remainder after the drain.
+         Single-threaded here: the VAD path's write() and connect() both run
+         on the media thread under cb->mutex. */
+      const uint8_t* p = static_cast<const uint8_t*>(data);
+      m_prebufStaging.insert(m_prebufStaging.end(), p, p + datalen);
+      size_t usable = (m_prebufStaging.size() / CHUNKSIZE) * CHUNKSIZE;
+      if (usable) {
+        m_audioBuffer->add(m_prebufStaging.data(), (uint32_t) usable);
+        m_prebufStaging.erase(m_prebufStaging.begin(), m_prebufStaging.begin() + usable);
       }
       return true;
     }
@@ -466,6 +483,8 @@ private:
   std::mutex m_write_mutex;  // serializes all m_streamer write-side ops (Write/WritesDone)
   std::promise<void> m_promise;
   std::unique_ptr<SimpleBuffer> m_audioBuffer;  // lazily allocated; only used on the VAD prebuffer path
+  /* sub-chunk staging for the pre-connect path; media-thread-only (cb->mutex) */
+  std::vector<uint8_t> m_prebufStaging;
 };
 
 static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *obj) {

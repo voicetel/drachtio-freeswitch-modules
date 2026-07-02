@@ -340,6 +340,18 @@ public:
 						}
 					} while (p);
 				}
+				if (!m_finished && !m_prebufStaging.empty()) {
+					/* flush the sub-chunk staging remainder, in order */
+					try {
+						m_pushStream->Write(m_prebufStaging.data(), (uint32_t) m_prebufStaging.size());
+					} catch (const std::exception& e) {
+						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+							"GStreamer %p exception flushing prebuffer remainder: %s\n", this, e.what());
+						m_finished = true;
+					}
+				}
+				m_prebufStaging.clear();
+				m_prebufStaging.shrink_to_fit();
 				m_connected = true;
 			}
 		};
@@ -361,8 +373,17 @@ public:
          sent strictly after it -- never reordered around it or stranded in a
          buffer nobody reads again */
       if (!m_connected) {
-        if (datalen % CHUNKSIZE == 0) {
-          m_audioBuffer.add(data, datalen);
+        /* SimpleBuffer stores fixed CHUNKSIZE slices and its add() rejects
+           other lengths -- non-multiple frames (e.g. 480-byte 30ms-ptime
+           G.711, resampler output) were dropped wholesale, losing ALL
+           pre-connect audio for such codecs. Stage bytes and feed whole
+           chunks; the remainder is flushed at drain time. */
+        const uint8_t* p = static_cast<const uint8_t*>(data);
+        m_prebufStaging.insert(m_prebufStaging.end(), p, p + datalen);
+        size_t usable = (m_prebufStaging.size() / CHUNKSIZE) * CHUNKSIZE;
+        if (usable) {
+          m_audioBuffer.add(m_prebufStaging.data(), (uint32_t) usable);
+          m_prebufStaging.erase(m_prebufStaging.begin(), m_prebufStaging.begin() + usable);
         }
         return true;
       }
@@ -469,6 +490,8 @@ private:
 	   so it cannot deadlock. */
 	std::mutex m_audioBufferMutex;
 	SimpleBuffer m_audioBuffer;
+	/* sub-chunk staging for the pre-connect path; guarded by m_audioBufferMutex */
+	std::vector<uint8_t> m_prebufStaging;
 };
 
 static void reaper(struct cap_cb *cb) {

@@ -181,6 +181,14 @@ public:
 							}
 						} while (p);
 					}
+					if (!m_prebufStaging.empty()) {
+						/* flush the sub-chunk staging remainder, in order */
+						Aws::Vector<unsigned char> bits { m_prebufStaging.begin(), m_prebufStaging.end() };
+						std::lock_guard<std::mutex> lk2(m_mutex);
+						m_deqAudio.push_back(std::move(bits));
+					}
+					m_prebufStaging.clear();
+					m_prebufStaging.shrink_to_fit();
 					m_connected = true;
 				}
 				else {
@@ -256,9 +264,19 @@ public:
          the drain: enqueued ahead of older prebuffered audio, or added to the
          prebuffer after its one-shot drain and stranded forever. */
       if (!m_connected) {
-        if (datalen % CHUNKSIZE == 0) {
-          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::write queuing %d bytes\n", datalen);
-          m_audioBuffer.add(data, datalen);
+        /* SimpleBuffer stores fixed m_prebufChunkSize slices and its add()
+           rejects other lengths. The old gate (datalen % CHUNKSIZE) dropped
+           non-multiple frames wholesale (30ms-ptime codecs, resampler
+           output) -- and for resampled sessions it even let 320-byte frames
+           through to an add() sliced at 640 that silently rejected them, so
+           ALL pre-connect audio was lost. Stage bytes and feed whole chunks;
+           the sub-chunk remainder is flushed at drain time. */
+        const unsigned char* p = static_cast<const unsigned char*>(data);
+        m_prebufStaging.insert(m_prebufStaging.end(), p, p + datalen);
+        size_t usable = (m_prebufStaging.size() / m_prebufChunkSize) * m_prebufChunkSize;
+        if (usable) {
+          m_audioBuffer.add(m_prebufStaging.data(), (uint32_t) usable);
+          m_prebufStaging.erase(m_prebufStaging.begin(), m_prebufStaging.begin() + usable);
         }
         return true;
       }
@@ -438,6 +456,8 @@ private:
 	std::mutex m_audioBufferMutex;
 	uint32_t m_prebufChunkSize;     /* byte size of each m_audioBuffer chunk */
 	SimpleBuffer m_audioBuffer;
+	/* sub-chunk staging for the pre-connect path; guarded by m_audioBufferMutex */
+	std::vector<unsigned char> m_prebufStaging;
 };
 
 static void *SWITCH_THREAD_FUNC aws_transcribe_thread(switch_thread_t *thread, void *obj) {
