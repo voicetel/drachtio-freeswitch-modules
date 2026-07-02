@@ -95,6 +95,10 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 		return SWITCH_STATUS_FALSE;
 	}
 	if ((status = switch_core_media_bug_add(session, "dg_transcribe", NULL, capture_callback, pUserData, 0, flags, &bug)) != SWITCH_STATUS_SUCCESS) {
+		/* session_init already created the tech_pvt and started the AudioPipe
+		   connecting; without this teardown both leaked (object + open WS
+		   connection) since no bug private exists for any later stop to find */
+		dg_transcribe_session_cleanup(pUserData);
 		return status;
 	}
   switch_channel_set_private(channel, MY_BUG_NAME, bug);

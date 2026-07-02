@@ -501,6 +501,21 @@ extern "C" {
     return SWITCH_STATUS_SUCCESS;
   }
 
+  void dg_transcribe_session_cleanup(void *pUserData) {
+    private_t* tech_pvt = (private_t*) pUserData;
+    if (!tech_pvt) return;
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+      "dg_transcribe_session_cleanup: tearing down orphaned tech_pvt (media bug never attached)\n");
+    switch_mutex_lock(tech_pvt->mutex);
+    /* the AudioPipe is already connecting (session_init calls connect());
+       hand it to the reaper, which finishes/closes it and deletes it once the
+       close promise is fulfilled -- finish() works pre-handshake via
+       m_gracefulShutdown, and CONNECT_FAIL fulfills the promise itself */
+    if (tech_pvt->pAudioPipe) reaper(tech_pvt);
+    destroy_tech_pvt(tech_pvt);
+    switch_mutex_unlock(tech_pvt->mutex);
+  }
+
 	switch_status_t dg_transcribe_session_stop(switch_core_session_t *session,int channelIsClosing, char* bugname) {
     switch_channel_t *channel = switch_core_session_get_channel(session);
     switch_media_bug_t *bug = (switch_media_bug_t*) switch_channel_get_private(channel, MY_BUG_NAME);
