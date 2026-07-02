@@ -209,10 +209,13 @@ static switch_status_t start_capture2(switch_core_session_t *session, switch_med
 		return SWITCH_STATUS_FALSE;
 	}
 	if ((status = switch_core_media_bug_add(session, "google_transcribe", NULL, capture_callback, pUserData, 0, flags, &bug)) != SWITCH_STATUS_SUCCESS) {
+		/* the gRPC read thread is already running out of the session pool;
+		   without this teardown it outlives session destroy (use-after-free) */
+		google_speech_session_orphan_cleanup(pUserData);
 		return status;
 	}
 
-	switch_channel_set_private(channel, MY_BUG_NAME, bug);	
+	switch_channel_set_private(channel, MY_BUG_NAME, bug);
 
 	/* play the prompt, looking for detection result */
 	if (play_file != NULL){
@@ -301,6 +304,9 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 	}
 
 	if ((status = switch_core_media_bug_add(session, bugname, NULL, capture_callback, pUserData, 0, flags, &bug)) != SWITCH_STATUS_SUCCESS) {
+		/* the gRPC read thread is already running out of the session pool;
+		   without this teardown it outlives session destroy (use-after-free) */
+		google_speech_session_orphan_cleanup(pUserData);
 		return status;
 	}
 

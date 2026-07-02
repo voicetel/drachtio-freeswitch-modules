@@ -559,6 +559,34 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
   return nullptr;
 }
 
+/* Shared teardown: half-close (or cancel) the stream, join the read thread,
+   delete the streamer, free resampler/vad. Caller must hold cb->mutex (or own
+   the cb exclusively, as on the never-attached path). Idempotent: safe when
+   another path already ran it. */
+static void reap_streamer(struct cap_cb* cb) {
+  GStreamer* streamer = (GStreamer *) cb->streamer.load();
+  if (streamer) {
+    streamer->writesDone();
+  }
+  if (cb->thread) {
+    switch_status_t st;
+    switch_thread_join(&st, cb->thread);
+    cb->thread = NULL;
+  }
+  if (streamer) {
+    delete streamer;
+    cb->streamer.store(NULL);
+  }
+  if (cb->resampler) {
+    speex_resampler_destroy(cb->resampler);
+    cb->resampler = NULL;
+  }
+  if (cb->vad) {
+    switch_vad_destroy(&cb->vad);
+    cb->vad = nullptr;
+  }
+}
+
 extern "C" {
 
     switch_status_t google_speech_init() {
@@ -676,6 +704,20 @@ extern "C" {
       return SWITCH_STATUS_SUCCESS;
     }
 
+    /* teardown for a cap_cb whose media bug was never attached (bug-add
+       failure): the read thread is already running -- blocked in
+       waitForConnect() on the VAD path or reading on the connected path --
+       and it lives in the session pool, so leaving it running is a
+       use-after-free once the session is destroyed */
+    void google_speech_session_orphan_cleanup(void *pUserData) {
+      struct cap_cb *cb = (struct cap_cb *) pUserData;
+      if (!cb) return;
+      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+        "google_speech_session_orphan_cleanup: tearing down orphaned cb %p (media bug never attached)\n", (void *) cb);
+      MutexLock cbLock(cb->mutex);
+      reap_streamer(cb);
+    }
+
     switch_status_t google_speech_session_cleanup(switch_core_session_t *session, int channelIsClosing, switch_media_bug_t *bug) {
       switch_channel_t *channel = switch_core_session_get_channel(session);
 
@@ -684,8 +726,15 @@ extern "C" {
         MutexLock cbLock(cb->mutex);  // unlocks on any exit from this scope
 
         if (!switch_channel_get_private(channel, cb->bugname)) {
-          // race condition
-          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "%s Bug is not attached (race).\n", switch_channel_get_name(channel));
+          // The private is already gone: either a benign double-cleanup of THIS
+          // cb (streamer/thread already reaped -- reap_streamer is a no-op), or
+          // this cb LOST a start race (a second start under the same bugname
+          // overwrote the private) and nothing else will ever tear it down.
+          // Unconditionally skipping the join here orphaned the loser's read
+          // thread, which lives in the session pool and dereferenced freed
+          // memory after session destroy.
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "%s Bug is not attached (race); reaping this bug's own resources.\n", switch_channel_get_name(channel));
+          reap_streamer(cb);
           return SWITCH_STATUS_FALSE;
         }
         switch_channel_set_private(channel, cb->bugname, NULL);
@@ -699,28 +748,12 @@ extern "C" {
         	}
         }
 
-        // close connection and get final responses
-        GStreamer* streamer = (GStreamer *) cb->streamer.load();
+        // close connection and get final responses (writesDone + join read
+        // thread + delete streamer + free resampler/vad)
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "google_speech_session_cleanup: waiting for read thread to complete\n");
+        reap_streamer(cb);
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "google_speech_session_cleanup: read thread completed\n");
 
-        if (streamer) {
-          streamer->writesDone();
-
-          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "google_speech_session_cleanup: GStreamer (%p) waiting for read thread to complete\n", (void*)streamer);
-          switch_status_t st;
-          switch_thread_join(&st, cb->thread);
-          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "google_speech_session_cleanup:  GStreamer (%p) read thread completed\n", (void*)streamer);
-
-          delete streamer;
-          cb->streamer.store(NULL);
-        }
-
-        if (cb->resampler) {
-          speex_resampler_destroy(cb->resampler);
-        }
-        if (cb->vad) {
-          switch_vad_destroy(&cb->vad);
-          cb->vad = nullptr;
-        }
         if (!channelIsClosing) {
           switch_core_media_bug_remove(session, &bug);
         }
