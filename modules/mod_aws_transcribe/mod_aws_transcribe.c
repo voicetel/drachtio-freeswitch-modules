@@ -263,6 +263,13 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_aws_transcribe_load)
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_VAD_DETECTED);
 		return SWITCH_STATUS_TERM;
 	}
+	/* NB: the subclass NAME (inherited jambonz_transcribe::error) is frozen --
+	   external consumers key on it; this only adds the missing reservation the
+	   other five subclasses already had */
+	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_ERROR) != SWITCH_STATUS_SUCCESS) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_ERROR);
+		return SWITCH_STATUS_TERM;
+	}
 
 	/* connect my internal structure to the blank pointer passed to me */
 	*module_interface = switch_loadable_module_create_module_interface(pool, modname);
@@ -294,5 +301,6 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_aws_transcribe_shutdown)
 	switch_event_free_subclass(TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_VAD_DETECTED);
+	switch_event_free_subclass(TRANSCRIBE_EVENT_ERROR);
 	return SWITCH_STATUS_SUCCESS;
 }
