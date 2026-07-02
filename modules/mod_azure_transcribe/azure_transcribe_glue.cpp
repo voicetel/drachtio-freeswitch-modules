@@ -89,8 +89,16 @@ public:
 		auto sourceLanguageConfig = SourceLanguageConfig::FromLanguage(lang);
 		auto format = AudioStreamFormat::GetWaveFormatPCM(8000, 16, channels);
 		auto options = AudioProcessingOptions::Create(AUDIO_INPUT_PROCESSING_ENABLE_DEFAULT);
-		auto speechConfig = nullptr != endpoint ? 
-			(nullptr != subscriptionKey ?
+		/* SPXSTRING is std::string: constructing it from a NULL const char* is
+		   undefined behavior (strlen on nullptr inside libstdc++). Treat
+		   NULL/empty uniformly and fail a keyless, endpointless start with a
+		   catchable exception instead of crashing FreeSWITCH. */
+		bool hasKey = (nullptr != subscriptionKey && *subscriptionKey);
+		if (nullptr == endpoint && !hasKey) {
+			throw std::invalid_argument("no azure subscription key configured (AZURE_SUBSCRIPTION_KEY channel var or env var) and no AZURE_SERVICE_ENDPOINT");
+		}
+		auto speechConfig = nullptr != endpoint ?
+			(hasKey ?
 				SpeechConfig::FromEndpoint(endpoint, subscriptionKey) :
 				SpeechConfig::FromEndpoint(endpoint)) :
 			SpeechConfig::FromSubscription(subscriptionKey, region);
@@ -540,7 +548,11 @@ extern "C" {
 		try {
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "%s: initializing gstreamer with %s\n", 
 					switch_channel_get_name(channel), bugname);
-			streamer = new GStreamer(sessionId, bugname, channels, lang, interim, sampleRate, cb->region, subscriptionKey, responseHandler);
+			/* pass the resolved copies: cb->subscriptionKey/cb->region are filled
+			   from the channel vars OR the env vars -- the raw channel-var
+			   pointers are NULL under env-var-only auth (the env copies were
+			   previously dead stores and env auth crashed in the constructor) */
+			streamer = new GStreamer(sessionId, bugname, channels, lang, interim, sampleRate, cb->region, cb->subscriptionKey, responseHandler);
 			cb->streamer = streamer;
 			if (!cb->vad) streamer->connect();
 		} catch (std::exception& e) {
