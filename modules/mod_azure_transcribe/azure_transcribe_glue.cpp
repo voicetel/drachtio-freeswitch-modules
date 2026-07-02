@@ -435,6 +435,13 @@ static void killcb(struct cap_cb* cb) {
 	if (cb) {
 		if (cb->streamer) {
 			GStreamer* p = (GStreamer *) cb->streamer;
+			/* disconnect all handlers and stop recognition BEFORE deleting: the
+			   handler lambdas capture raw `this`, and this path is reached with
+			   them still connected (init-catch path when connect() throws after
+			   StartContinuousRecognitionAsync was dispatched) -- a raw delete
+			   there let a late SDK callback fire into freed memory. finish() is
+			   idempotent and no longer throws. */
+			p->finish();
 			delete p;
 			cb->streamer = NULL;
 		}
