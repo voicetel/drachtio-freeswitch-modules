@@ -82,6 +82,15 @@ int AudioPipe::lws_callback(struct lws *wsi,
           *ppAp = ap;
           ap->m_vhd = vhd;
           ap->m_state = LWS_CLIENT_CONNECTED;
+          // A finish() call that arrived while still CONNECTING no-ops (nothing
+          // can be buffered for sending on a not-yet-connected pipe) and records
+          // the intent in m_gracefulShutdown instead. Complete it now rather
+          // than silently dropping it -- otherwise the reaper's waitForClose()
+          // blocks forever and this connection leaks for the rest of the
+          // process's life.
+          if (ap->m_gracefulShutdown) {
+            ap->finish();
+          }
           ap->m_callback(ap->m_uuid.c_str(), AudioPipe::CONNECT_SUCCESS, NULL,  ap->isFinished());
         }
         else {
@@ -547,8 +556,26 @@ void AudioPipe::close() {
 }
 
 void AudioPipe::finish() {
-  if (m_finished || m_state != LWS_CLIENT_CONNECTED) return;
-  m_finished = true;
+  if (m_state != LWS_CLIENT_CONNECTED) {
+    // Not connected yet (still IDLE/CONNECTING): CloseStream can't be buffered
+    // for sending until the handshake completes. Remember the request so
+    // LWS_CALLBACK_CLIENT_ESTABLISHED can complete it once connected --
+    // previously this was silently dropped, and if the connect subsequently
+    // succeeded, nothing else in the codebase ever called finish()/close()
+    // again for this pipe: the reaper's detached thread blocked forever in
+    // waitForClose() and the socket to deepgram stayed open indefinitely.
+    m_gracefulShutdown = true;
+    // The connect may have completed concurrently between the state check
+    // above and setting the flag; re-check rather than depending solely on
+    // ESTABLISHED's own read of m_gracefulShutdown, which could already have
+    // run (and seen it as still false) in that window. cppcheck's sequential
+    // data-flow analysis can't see that m_state is a cross-thread atomic
+    // another thread may mutate between the two reads -- this recheck is the
+    // point, not redundant.
+    // cppcheck-suppress identicalInnerCondition
+    if (m_state != LWS_CLIENT_CONNECTED) return;
+  }
+  if (m_finished.exchange(true)) return; // already finished by a concurrent caller
   bufferForSending("{\"type\": \"CloseStream\"}");
 }
 
