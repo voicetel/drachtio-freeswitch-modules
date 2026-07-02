@@ -130,8 +130,8 @@ namespace {
   }
 
   static void destroy_tech_pvt(private_t *tech_pvt) {
-    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "%s (%u) destroy_tech_pvt\n", tech_pvt->sessionId, tech_pvt->id);
     if (tech_pvt) {
+      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "%s (%u) destroy_tech_pvt\n", tech_pvt->sessionId, tech_pvt->id);
       if (tech_pvt->pAudioPipe) {
         deepgram::AudioPipe* p = (deepgram::AudioPipe *) tech_pvt->pAudioPipe;
         delete p;
@@ -524,11 +524,10 @@ extern "C" {
       return SWITCH_STATUS_FALSE;
     }
     private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
+    if (!tech_pvt) return SWITCH_STATUS_FALSE;
     uint32_t id = tech_pvt->id;
 
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) dg_transcribe_session_stop\n", id);
-
-    if (!tech_pvt) return SWITCH_STATUS_FALSE;
       
     // close connection and get final responses
     switch_mutex_lock(tech_pvt->mutex);
