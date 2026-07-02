@@ -183,10 +183,23 @@ int AudioPipe::lws_callback(struct lws *wsi,
             lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE max buffer exceeded, truncating message.\n");
           }
           else {
-            ap->m_recv_buf = (uint8_t*) realloc(ap->m_recv_buf, newlen);
-            if (nullptr != ap->m_recv_buf) {
+            uint8_t* grown = (uint8_t*) realloc(ap->m_recv_buf, newlen);
+            if (nullptr != grown) {
+              ap->m_recv_buf = grown;
               ap->m_recv_buf_len = newlen;
               ap->m_recv_buf_ptr = ap->m_recv_buf + write_offset;
+            }
+            else {
+              // realloc failure leaves the original block valid: assigning the
+              // nullptr over m_recv_buf directly would leak it and leave
+              // m_recv_buf_ptr/m_recv_buf_len stale (poisoning the offset math
+              // of every later fragment). Drop the message and free the old
+              // buffer instead, then swallow fragments until it ends.
+              lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE recv buffer realloc failed, dropping message.\n");
+              free(ap->m_recv_buf);
+              ap->m_recv_buf = ap->m_recv_buf_ptr = nullptr;
+              ap->m_recv_buf_len = 0;
+              ap->m_recv_buf_discarding = !lws_is_final_fragment(wsi);
             }
           }
         }
