@@ -240,6 +240,15 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
   const char* model = NULL;
 	const char* var;
 
+	if (strlen(bugname) > MAX_BUG_LEN) {
+		/* the channel private is stored under the FULL name but cb->bugname is
+		   a truncated copy used by the CLOSE-path stop -- a longer name made
+		   cleanup miss the private and orphan the gRPC read thread */
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+			"bugname too long (max %d chars): %s\n", MAX_BUG_LEN, bugname);
+		return SWITCH_STATUS_FALSE;
+	}
+
 	if (switch_channel_get_private(channel, bugname)) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "removing bug from previous transcribe\n");
 		do_stop(session, bugname);
@@ -337,7 +346,8 @@ SWITCH_STANDARD_API(transcribe2_function)
       (argc < 2) || !argv[1] ||
       (!strcasecmp(argv[1], "start") && argc < 10) ||
       zstr(argv[0])) {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error with command %s %s.\n", cmd, argv[0]);
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error with command %s %s.\n",
+			cmd ? cmd : "", argv[0] ? argv[0] : "");
 		stream->write_function(stream, "-USAGE: %s\n", TRANSCRIBE2_API_SYNTAX);
 		goto done;
 	} else {
@@ -411,7 +421,8 @@ SWITCH_STANDARD_API(transcribe_function)
       (!strcasecmp(argv[1], "stop") && argc < 2) ||
       (!strcasecmp(argv[1], "start") && argc < 3) ||
       zstr(argv[0])) {
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error with command %s %s %s.\n", cmd, argv[0], argv[1]);
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error with command %s %s %s.\n",
+			cmd ? cmd : "", argv[0] ? argv[0] : "", argv[1] ? argv[1] : "");
 		stream->write_function(stream, "-USAGE: %s\n", TRANSCRIBE_API_SYNTAX);
 		goto done;
 	} else {
