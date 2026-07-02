@@ -69,7 +69,13 @@ public:
 	 m_connected(false), m_connecting(false), m_audioBuffer(CHUNKSIZE, 15),
 	m_responseHandler(responseHandler) {
 
-		switch_core_session_t* psession = switch_core_session_locate(sessionId);
+		/* RAII: nearly every SDK call below can throw (SPX_THROW_HR in
+		   FromEndpoint/FromSubscription/SetProxy/FromConfig, bad_alloc, ...) and
+		   the catch in azure_transcribe_session_init cannot release a read lock
+		   it never sees -- a manual locate/rwunlock pair leaked the lock on any
+		   throw, permanently blocking that session's destruction */
+		SessionLock sessionLock(sessionId);
+		switch_core_session_t* psession = sessionLock.get();
 		if (!psession) throw std::invalid_argument( "session id no longer active" );
 		switch_channel_t *channel = switch_core_session_get_channel(psession);
  
@@ -262,8 +268,7 @@ public:
 		if (interim) m_recognizer->Recognizing += onRecognitionEvent;
 		m_recognizer->Recognized += onRecognitionEvent;
 		m_recognizer->Canceled += onCanceled;
-
-		switch_core_session_rwunlock(psession);
+		/* sessionLock releases the read lock here, on every path */
 	}
 
 	~GStreamer() {
