@@ -148,32 +148,45 @@ public:
 
     auto OnStreamReady = [this](Model::AudioStream& stream)
     {
-			SessionLock psession(m_sessionId.c_str());
-			if (psession) {
-				m_pStream = &stream;
-				m_connected = true;
+			{
+				SessionLock psession(m_sessionId.c_str());
+				if (psession) {
+					m_pStream = &stream;
+					m_connected = true;
 
 
-				/* Drain the prebuffer under m_audioBufferMutex (guards m_audioBuffer
-				   only). m_connected is already true above, so write() below takes the
-				   connected path and never re-enters the add()/m_audioBufferMutex path
-				   -- so calling write() while holding this lock is safe even though
-				   std::mutex is non-recursive. write() takes m_mutex (not this lock),
-				   giving a one-way ordering m_audioBufferMutex -> m_mutex (no cycle). */
-				std::lock_guard<std::mutex> lk(m_audioBufferMutex);
-				// send any buffered audio
-				int nFrames = m_audioBuffer.getNumItems();
-				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got stream ready, %d buffered frames\n", this, nFrames);
-				if (nFrames) {
-					char *p;
-					do {
-						p = m_audioBuffer.getNextChunk();
-						if (p) {
-							write(p, CHUNKSIZE);
-						}
-					} while (p);
+					/* Drain the prebuffer under m_audioBufferMutex (guards m_audioBuffer
+					   only). m_connected is already true above, so write() below takes the
+					   connected path and never re-enters the add()/m_audioBufferMutex path
+					   -- so calling write() while holding this lock is safe even though
+					   std::mutex is non-recursive. write() takes m_mutex (not this lock),
+					   giving a one-way ordering m_audioBufferMutex -> m_mutex (no cycle). */
+					std::lock_guard<std::mutex> lk(m_audioBufferMutex);
+					// send any buffered audio
+					int nFrames = m_audioBuffer.getNumItems();
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p got stream ready, %d buffered frames\n", this, nFrames);
+					if (nFrames) {
+						char *p;
+						do {
+							p = m_audioBuffer.getNextChunk();
+							if (p) {
+								write(p, CHUNKSIZE);
+							}
+						} while (p);
+					}
+				}
+				else {
+					/* session already gone: still publish the stream so the worker's
+					   shutdown path can Close() it -- a finish() issued during the
+					   connect window otherwise has nothing to close and the worker
+					   would sit on the SDK's own (long) timeout */
+					m_pStream = &stream;
 				}
 			}
+			/* wake the worker: it may be blocked in its shutdown wait for the
+			   stream to become available (finish() raced the async connect) */
+			std::lock_guard<std::mutex> lk(m_mutex);
+			m_cond.notify_one();
     };
     auto OnResponseCallback = [this](const TranscribeStreamingServiceClient* pClient, 
 			const Model::StartStreamTranscriptionRequest& request, 
@@ -280,13 +293,25 @@ public:
 		bool shutdownInitiated = false;
 		while (true) {
 			std::unique_lock<std::mutex> lk(m_mutex);
-			m_cond.wait(lk, [&, this] { 
-				return (!m_deqAudio.empty() && !m_finishing)  || m_transcript.TranscriptHasBeenSet() || m_finished  || (m_finishing && !shutdownInitiated);
+			m_cond.wait(lk, [&, this] {
+				return (!m_deqAudio.empty() && !m_finishing)  || m_transcript.TranscriptHasBeenSet() || m_finished  || (m_finishing && !shutdownInitiated) ||
+					(m_finishing && shutdownInitiated && nullptr != m_pStream.load());
 			});
 
 
-			// we have data to process or have been told we're done
-			if (m_finished || !m_connected) return;
+			// terminal: the SDK delivered its final outcome; no callbacks remain in flight
+			if (m_finished) return;
+			/* Never-connected AND not connecting (VAD armed, no speech seen):
+			   nothing is outstanding, safe to exit and let the caller delete this
+			   object. If a connect IS in flight (m_connecting) we must NOT return:
+			   the caller deletes this object on return while the SDK still holds
+			   this-capturing callbacks (OnStreamReady/OnResponseCallback) -- a
+			   use-after-free on an SDK thread. Stay in the loop: once the stream
+			   becomes ready the shutdown branch below Close()s it, the SDK then
+			   delivers the final outcome (OnResponseCallback sets m_finished), and
+			   only then do we return. A failed connect delivers the error outcome
+			   the same way. */
+			if (!m_connected && !m_connecting) return;
 
 			if (m_transcript.TranscriptHasBeenSet()) {
 				SessionLock psession(m_sessionId.c_str());
