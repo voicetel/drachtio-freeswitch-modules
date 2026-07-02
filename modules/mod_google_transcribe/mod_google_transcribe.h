@@ -47,6 +47,7 @@ struct cap_cb {
 	char bugname[MAX_BUG_LEN+1];
 	char sessionId[MAX_SESSION_ID+1];
 	char *base;
+	uint32_t channels;   /* capture channel count (2 with SMBF_STEREO) */
   SpeexResamplerState *resampler;
 	/* streamer is read by the media (frame) thread at the gate BEFORE the
 	 * trylock, while cleanup nulls it under cb->mutex after switch_thread_join.

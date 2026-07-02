@@ -684,6 +684,7 @@ extern "C" {
       cb->bugname[MAX_BUG_LEN] = '\0';
       cb->got_end_of_utterance = 0;
       cb->wants_single_utterance = single_utterance;
+      cb->channels = channels;
       if (play_file != NULL){
         cb->play_file = 1;
       }
@@ -856,7 +857,9 @@ extern "C" {
 
               if (cb->resampler) {
                 spx_int16_t out[SWITCH_RECOMMENDED_BUFFER_SIZE];
-                spx_uint32_t out_len = SWITCH_RECOMMENDED_BUFFER_SIZE;
+                /* interleaved API: capacity and counts are samples PER CHANNEL;
+                   out[] holds SWITCH_RECOMMENDED_BUFFER_SIZE elements total */
+                spx_uint32_t out_len = SWITCH_RECOMMENDED_BUFFER_SIZE / cb->channels;
                 spx_uint32_t in_len = frame.samples;
                 size_t written;
 
@@ -865,10 +868,14 @@ extern "C" {
                   (spx_uint32_t *) &in_len,
                   &out[0],
                   &out_len);
-                streamer->write( &out[0], sizeof(spx_int16_t) * out_len);
+                /* out_len is per-channel samples; bytes = samples * 2 * channels */
+                streamer->write( &out[0], sizeof(spx_int16_t) * out_len * cb->channels);
               }
               else {
-                streamer->write( frame.data, sizeof(spx_int16_t) * frame.samples);
+                /* frame.samples is per-channel (media_bug_read divides by the
+                   channel count); frame.datalen is the actual byte count --
+                   sizeof(int16) * samples sent only HALF of every stereo frame */
+                streamer->write( frame.data, frame.datalen);
               }
             }
           }
