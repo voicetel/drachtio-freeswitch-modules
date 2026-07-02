@@ -559,7 +559,10 @@ extern "C" {
 
 		/* determine if we need to resample the audio to 16-bit 8khz */
 		if (sampleRate != 8000) {
-			cb->resampler = speex_resampler_init(1, sampleRate, 8000, SWITCH_RESAMPLE_QUALITY, &err);
+			/* channels, not 1: stereo capture (SMBF_STEREO) delivers interleaved
+			   2-channel frames and the frame path uses the interleaved API (the
+			   Azure stream format is likewise declared with the channel count) */
+			cb->resampler = speex_resampler_init(channels, sampleRate, 8000, SWITCH_RESAMPLE_QUALITY, &err);
 			if (0 != err) {
 				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "%s: Error initializing resampler: %s.\n", 
 							switch_channel_get_name(channel), speex_resampler_strerror(err));
@@ -675,19 +678,21 @@ extern "C" {
 						}
 
 						if (cb->resampler) {
-							/* out[] is an array of int16 samples, so size it in sample units, not bytes */
+							/* out[] is an array of int16 samples, so size it in sample units, not bytes.
+							   The interleaved API takes capacity/counts in samples PER CHANNEL. */
 							spx_int16_t out[SWITCH_RECOMMENDED_BUFFER_SIZE / 2];
-							spx_uint32_t out_len = SWITCH_RECOMMENDED_BUFFER_SIZE / 2;
+							spx_uint32_t out_len = (SWITCH_RECOMMENDED_BUFFER_SIZE / 2) / cb->channels;
 							spx_uint32_t in_len = frame.samples;
 							size_t written;
-						
+
 							speex_resampler_process_interleaved_int(
 								cb->resampler,
 								(const spx_int16_t *) frame.data,
-								(spx_uint32_t *) &in_len, 
+								(spx_uint32_t *) &in_len,
 								&out[0],
 								&out_len);
-							streamer->write( &out[0], sizeof(spx_int16_t) * out_len);
+							/* out_len is per-channel samples; bytes = samples * 2 * channels */
+							streamer->write( &out[0], sizeof(spx_int16_t) * out_len * cb->channels);
 						}
 						else {
 							streamer->write( frame.data, frame.datalen);
