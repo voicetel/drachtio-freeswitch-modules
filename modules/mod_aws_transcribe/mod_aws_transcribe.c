@@ -206,8 +206,19 @@ SWITCH_STANDARD_API(aws_transcribe_function)
           flags |= SMBF_WRITE_STREAM ;
           flags |= SMBF_STEREO;
 				}
-    		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "start transcribing %s %s %s\n", lang, interim ? "interim": "complete", bugname);
-				status = start_capture(lsession, flags, lang, interim, bugname);
+				if (strlen(bugname) >= MAX_BUG_LEN) {
+					/* the channel private is stored under the FULL name but
+					   cb->bugname is a truncated copy used by the hangup CLOSE path;
+					   a longer name would make that stop miss the private and leak
+					   the worker thread + streamer past session destroy */
+					switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+						"bugname too long (max %d chars): %s\n", MAX_BUG_LEN - 1, bugname);
+					status = SWITCH_STATUS_FALSE;
+				}
+				else {
+					switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "start transcribing %s %s %s\n", lang, interim ? "interim": "complete", bugname);
+					status = start_capture(lsession, flags, lang, interim, bugname);
+				}
 			}
 			switch_core_session_rwunlock(lsession);
 		}
