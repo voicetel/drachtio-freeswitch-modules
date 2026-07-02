@@ -358,6 +358,11 @@ public:
     }
     m_request.set_audio_content(data, datalen);
     std::lock_guard<std::mutex> lk(m_write_mutex);
+    /* re-check under the lock: after WritesDone()/Finish() the stream is
+       half-closed and a further Write violates the gRPC API contract (the
+       END_OF_SINGLE_UTTERANCE gate in the frame callback is only checked once,
+       before its read loop, so the read thread can half-close mid-loop) */
+    if (m_writesDone) return false;
     bool ok = m_streamer->Write(m_request);
     return ok;
   }
@@ -373,6 +378,13 @@ public:
 	}
 
 	grpc::Status finish() {
+		/* gRPC sync streams document Write/WritesDone as thread-safe only with
+		   respect to Read -- NOT Finish. The media thread can still be inside
+		   write() when google unilaterally ends the stream and the read thread
+		   calls finish(); serialize them on the same mutex, and mark the write
+		   side closed so no Write can follow Finish. */
+		std::lock_guard<std::mutex> lk(m_write_mutex);
+		m_writesDone = true;
 		return m_streamer->Finish();
 	}
 
