@@ -571,6 +571,24 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
           cb->responseHandler(session, "no_audio", cb->bugname);
         }
       }
+      else if (!status.ok()) {
+        /* the RPC failure status (UNAUTHENTICATED, UNAVAILABLE,
+           INVALID_ARGUMENT, RESOURCE_EXHAUSTED, ...) arrives HERE, not as an
+           in-band response error -- previously only OUT_OF_RANGE was surfaced
+           and every other failure produced a DEBUG log and silence, leaving
+           the consumer waiting on a recognizer that was gone. Same event
+           shape as the in-band error path above. */
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "grpc_read_thread: stream failed: %s (%d)\n", status.error_message().c_str(), status.error_code());
+        cJSON* json = cJSON_CreateObject();
+        cJSON_AddStringToObject(json, "type", "error");
+        cJSON_AddStringToObject(json, "error", status.error_message().c_str());
+        char* jsonString = cJSON_PrintUnformatted(json);
+        if (jsonString) {
+          cb->responseHandler(session, jsonString, cb->bugname);
+          free(jsonString);
+        }
+        cJSON_Delete(json);
+      }
       switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "grpc_read_thread: finish() status %s (%d)\n", status.error_message().c_str(), status.error_code()) ;
     }
     // sessionLock releases the session read-lock here at scope exit
