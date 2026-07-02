@@ -104,6 +104,11 @@ int AudioPipe::lws_callback(struct lws *wsi,
           *ppAp = ap;
           ap->m_vhd = vhd;
           ap->m_state = LWS_CLIENT_CONNECTED;
+          // a close() issued while we were still CONNECTING recorded its intent
+          // in m_closePending; complete it now rather than leaking the pipe
+          if (ap->m_closePending) {
+            ap->close();
+          }
           ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::CONNECT_SUCCESS, NULL);
         }
         else {
@@ -503,6 +508,7 @@ AudioPipe::AudioPipe(const char* uuid, const char* host, unsigned int port, cons
   int sslFlags, size_t bufLen, size_t minFreespace, const char* username, const char* password, char* bugname, notifyHandler_t callback) :
   m_uuid(uuid), m_host(host), m_port(port), m_path(path), m_sslFlags(sslFlags),
   m_audio_buffer_min_freespace(minFreespace), m_audio_buffer_max_len(bufLen), m_gracefulShutdown(false),
+  m_closePending(false),
   m_audio_buffer_write_offset(LWS_PRE), m_recv_buf(nullptr), m_recv_buf_ptr(nullptr), m_bugname(bugname),
   m_state(LWS_CLIENT_IDLE), m_wsi(nullptr), m_vhd(nullptr), m_callback(callback),
   m_closeSignaled(false) {
@@ -567,7 +573,22 @@ void AudioPipe::unlockAudioBuffer() {
 }
 
 void AudioPipe::close() {
-  if (m_state != LWS_CLIENT_CONNECTED) return;
+  if (m_state != LWS_CLIENT_CONNECTED) {
+    // Not connected yet (still IDLE/CONNECTING): there is nothing to disconnect
+    // until the handshake completes. Remember the request so
+    // LWS_CALLBACK_CLIENT_ESTABLISHED can complete it once connected --
+    // previously this was silently dropped, and if the connect subsequently
+    // succeeded, nothing else ever called close() again for this pipe: the
+    // reaper's detached thread blocked forever in waitForClose() and the
+    // connection leaked for the rest of the process's life.
+    m_closePending = true;
+    // the connect may have completed concurrently between the state check
+    // above and setting the flag; re-check rather than depending solely on
+    // ESTABLISHED's own read of m_closePending, which could already have run
+    // (and seen it as still false) in that window
+    // cppcheck-suppress identicalInnerCondition
+    if (m_state != LWS_CLIENT_CONNECTED) return;
+  }
   addPendingDisconnect(this);
 }
 

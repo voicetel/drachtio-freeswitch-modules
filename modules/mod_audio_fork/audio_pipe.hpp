@@ -159,6 +159,10 @@ private:
   std::string m_password;
   /* cross-thread flag (written by graceful-shutdown path, read by lws callback) */
   std::atomic<bool> m_gracefulShutdown;
+  /* a close() that arrived while the WS handshake was still in flight; completed
+     by LWS_CALLBACK_CLIENT_ESTABLISHED so the reaper's waitForClose() cannot
+     block forever on a connection nothing will ever close */
+  std::atomic<bool> m_closePending;
   /* set-once guard so the close promise is fulfilled exactly once regardless of
      which terminal path (graceful close, far-end drop, or connect failure) runs */
   std::atomic<bool> m_closeSignaled;
