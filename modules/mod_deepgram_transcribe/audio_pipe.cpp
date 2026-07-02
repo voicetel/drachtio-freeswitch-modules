@@ -262,7 +262,10 @@ int AudioPipe::lws_callback(struct lws *wsi,
           if (ap->m_audio_buffer_write_offset > LWS_PRE) {
             size_t datalen = ap->m_audio_buffer_write_offset - LWS_PRE;
             int sent = lws_write(wsi, (unsigned char *) ap->m_audio_buffer + LWS_PRE, datalen, LWS_WRITE_BINARY);
-            if (sent < datalen) {
+            /* lws_write returns int (-1 on fatal error); comparing it against
+               the size_t datalen promoted -1 to SIZE_MAX and skipped the error
+               branch entirely, so write failures were silently discarded */
+            if (sent < (int) datalen) {
               lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE %s attemped to send %lu only sent %d wsi %p..\n", 
                 ap->m_uuid.c_str(), datalen, sent, wsi); 
             }
