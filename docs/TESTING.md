@@ -142,8 +142,12 @@ grep -oE 'switch_[a-z_]+' modules/<mod>/<file>.cpp | sort -u   # empty -> harnes
 ```
 
 The harness (`tests/soak/`) builds the **real** module source twice — once with
-`-fsanitize=address,undefined` and once with `-fsanitize=thread` — and drives,
-concurrently in a loop:
+`-fsanitize=address,undefined` and once with `-fsanitize=thread` — for BOTH
+lws AudioPipes (`mod_audio_fork` and, since v0.6.0, `mod_deepgram_transcribe`;
+deepgram dials TLS-only, so its soak covers the connect-fail/teardown/reaper
+surfaces plus a 200/200 reaper-completion gate, while its receive path is
+byte-identical to the mod_ttsd_transcribe AudioPipe soaked end-to-end in that
+repo) — and drives, concurrently in a loop:
 - the real lws service thread (started by `AudioPipe::initialize`),
 - a "media thread" that writes audio into the ring buffer exactly like the media-bug
   callback does,

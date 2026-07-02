@@ -15,6 +15,109 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## v0.6.0 — 2026-07-02
+
+Full adversarial code review of all four maintained transcribe modules
+(~5,300 lines, every source file), one commit per issue: **52 confirmed
+findings fixed across 45 commits** (deepgram 14, aws 10, azure 9, google 9,
+plus 1 cross-module and 2 follow-ups the new soak itself surfaced).
+**[unit] [build] [tsan]**
+
+Highlights by severity (per-issue detail is in the individual commit messages):
+
+- **Crashes / use-after-free:**
+  - aws: a stop racing the async connect deleted the GStreamer while the SDK
+    still held `this`-capturing callbacks (UAF on an SDK thread); a stop during
+    GStreamer construction hung the hangup thread forever (VAD path).
+  - azure: env-var-only auth passed a NULL subscription key to
+    `SpeechConfig::FromSubscription` (`std::string(nullptr)` — segfault on the
+    first start); same for an unauthenticated proxy's NULL username/password;
+    the init-failure path deleted the GStreamer with all six raw-`this` SDK
+    handlers still connected; a throwing `StopContinuousRecognitionAsync().get()`
+    on the detached reaper thread was `std::terminate`.
+  - google: bug-add failure and lost same-bugname start races orphaned the
+    gRPC read thread past session destroy (session-pool UAF); an invalid
+    JWT key in the `GOOGLE_APPLICATION_CREDENTIALS` channel variable
+    dereferenced a null credentials pointer; a non-string hints phrase
+    crashed protobuf `set_value`.
+  - deepgram: a NULL lws connect-error string was streamed into an
+    ostringstream on the shared lws service thread; a stereo resample could
+    overflow the send buffer (capacity math ignored channels — same fix in
+    aws/azure/google's declared capacities); `finish()` racing the WS
+    handshake leaked the pipe, thread, and socket forever (ttsd v0.3.0 port);
+    media-bug-add failure leaked a connecting AudioPipe (same fix in azure).
+- **gRPC/lws API contract:** google's `writesDone()` TOCTOU double half-close;
+  `Finish()` unserialized against concurrent `Write()`; writes after
+  half-close. deepgram's `lws_write` failure hidden by a signed/unsigned
+  comparison; cross-context `lws_callback_on_writable` calls with >1 service
+  thread (and, found by this release's new soak: an unsynchronized
+  `contexts[]` publish and a cross-context connect-adoption race — service
+  threads are now capped at 1, the default and production configuration,
+  until adoption is per-context).
+- **Silent failure / audio loss:** google surfaced only OUT_OF_RANGE stream
+  failures — bad credentials/UNAVAILABLE/etc. produced silence (now evented);
+  azure's unsolicited SessionStopped and push-stream write failures were
+  invisible to the consumer (now evented via the existing error subclass);
+  aws's prebuffer drain sent only the first half of every chunk on resampled
+  calls; pre-connect audio was dropped wholesale for non-320-multiple frames
+  in aws/azure/google (30ms ptime, resampler output); stereo audio was sent
+  at half its bytes (aws/google) or resampled as mono (aws/azure); deepgram's
+  empty-transcript filter could discard payloads containing real content.
+- **Hangs:** google had no deadline/keepalive anywhere — a silent network
+  partition stalled hangup for the TCP failure-detection duration (HTTP/2
+  keepalive added, 60s/20s, active calls only); aws's worker held its mutex
+  across blocking `WriteAudioEvent` calls, stalling the FS media thread under
+  back-pressure and making the v0.4.0 bounded-deque cap unreachable.
+- **Consistency/robustness:** bugname key-truncation orphans (aws/azure/google
+  — over-length names now rejected at the API); deepgram stop cleared the
+  wrong channel-private key and never populated the event `media-bugname`
+  header; connect-transition frame reordering/stranding (aws/azure); worker
+  thread exception guards (aws); event-subclass reserve/free (aws);
+  NULL-`%s` log arguments and deref-before-NULL-check cleanups (all four).
+
+Event subclass names and event-body JSON shapes are unchanged throughout;
+the only consumer-visible event changes are additive (previously-missing
+error events, and deepgram's `media-bugname` header now carrying the real
+bug name instead of an empty string).
+
+- **Tests:** `tests/soak` now also soaks the deepgram AudioPipe (ASan+UBSan +
+  TSan; TLS-only dialer, so it exercises the connect-fail/teardown/reaper
+  surfaces — the receive-path code is byte-identical to the
+  mod_ttsd_transcribe AudioPipe, whose own soak covers it end-to-end over
+  plain ws). lws-internal logging races are suppressed via `tsan.supp`
+  (library-only frames; module frames are never suppressed).
+
+### Deferred (recorded, not fixed)
+- aws: the shutdown wait for the SDK's final response is unbounded on a dead
+  network (no safe timeout without SDK-internal verification), and
+  `m_finished` is set inside `OnResponseCallback` before the SDK's async
+  frame fully unwinds — whether the post-callback unwind touches the client
+  is SDK-internal (needs aws-sdk-cpp source review or a live-creds TSan soak).
+- google: the VAD-path `connect()` still blocks the FS media thread on
+  network I/O under `cb->mutex` (structural; keepalive bounds the worst case).
+- Multi-context lws service threads stay capped at 1 pending a per-context
+  connect-adoption redesign (also applies to the mod_audio_fork /
+  mod_ttsd_transcribe lineage — not yet ported there).
+
+### Verification
+- **[unit]** `make -C tests coverage`: 9/9 host tests pass, 100% line coverage
+  of the FS-independent units (`base64.hpp`, `simple_buffer.h` — the latter
+  unchanged by these fixes).
+- **[build]** All four modules rebuilt from the fixed sources with the exact
+  callBroadcast-installer recipes against FreeSWITCH 1.10.12 in Docker
+  (aws-sdk-cpp static stack, Speech SDK 1.49.0, googleapis gens):
+  compile + link clean, `module_exists` = true for all four, 5 transcribe
+  APIs registered. The only warning is a pre-existing `speaker_tag`
+  deprecation in inherited google code.
+- **[tsan]** `tests/soak` (both AudioPipes, ASan+UBSan+LSan and TSan builds):
+  OVERALL PASS; deepgram reaper completion 200/200 in both builds; 0 TSan
+  warnings across 5 additional stress runs (300 iterations × 6 workers).
+  The soak itself found two real races during this release (fixed above:
+  `contexts[]` publish; capped multi-context mode).
+- **Not verified here:** live-credential vendor streaming (deepgram/google/
+  aws/azure runtime transcription needs real credentials + audio — see
+  `docs/TESTING.md`); the FS glue under concurrent live calls.
+
 ## v0.5.2 — 2026-06-28 (`7551c4b`, `0925fe1`)
 AudioPipe teardown use-after-free fix (`mod_audio_fork`, `mod_deepgram_transcribe`).
 **[build] [tsan]**
