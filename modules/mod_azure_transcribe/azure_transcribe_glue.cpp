@@ -474,6 +474,16 @@ extern "C" {
 		return SWITCH_STATUS_SUCCESS;
 	}
 
+	void azure_transcribe_session_cleanup(void *pUserData) {
+		struct cap_cb *cb = (struct cap_cb *) pUserData;
+		if (!cb) return;
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+			"azure_transcribe_session_cleanup: tearing down orphaned cb %p (media bug never attached)\n", (void *) cb);
+		/* killcb finish()es the streamer (handlers disconnected, recognition
+		   stopped) before deleting it, then frees resampler/vad */
+		killcb(cb);
+	}
+
 	// start transcribe on a channel
 	switch_status_t azure_transcribe_session_init(switch_core_session_t *session, responseHandler_t responseHandler, 
           uint32_t samples_per_second, uint32_t channels, char* lang, int interim, char* bugname, void **ppUserData

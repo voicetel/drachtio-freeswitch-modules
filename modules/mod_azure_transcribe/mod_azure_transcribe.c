@@ -95,6 +95,10 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 		return SWITCH_STATUS_FALSE;
 	}
 	if ((status = switch_core_media_bug_add(session, bugname, NULL, capture_callback, pUserData, 0, flags, &bug)) != SWITCH_STATUS_SUCCESS) {
+		/* session_init already created the recognizer and (non-VAD) started
+		   continuous recognition; without teardown it leaked and kept firing
+		   events for a start that reported failure */
+		azure_transcribe_session_cleanup(pUserData);
 		return status;
 	}
   switch_channel_set_private(channel, bugname, bug);
