@@ -77,7 +77,7 @@ int AudioPipe::lws_callback(struct lws *wsi,
     case LWS_CALLBACK_EVENT_WAIT_CANCELLED:
       processPendingConnects(vhd);
       processPendingDisconnects(vhd);
-      processPendingWrites();
+      processPendingWrites(vhd);
       break;
     case LWS_CALLBACK_CLIENT_CONNECTION_ERROR:
       {
@@ -318,9 +318,9 @@ static const lws_retry_bo_t retry = {
     0          // jitter_percent
 };
 
-struct lws_context *AudioPipe::contexts[] = {
-  nullptr, nullptr, nullptr, nullptr, nullptr,
-  nullptr, nullptr, nullptr, nullptr, nullptr
+std::atomic<struct lws_context*> AudioPipe::contexts[] = {
+  {nullptr}, {nullptr}, {nullptr}, {nullptr}, {nullptr},
+  {nullptr}, {nullptr}, {nullptr}, {nullptr}, {nullptr}
 };
 unsigned int AudioPipe::numContexts = 0;
 std::atomic<unsigned int> AudioPipe::nchild{0};
@@ -360,28 +360,45 @@ void AudioPipe::processPendingConnects(lws_per_vhost_data *vhd) {
 }
 
 void AudioPipe::processPendingDisconnects(lws_per_vhost_data *vhd) {
+  /* Only service pipes owned by THIS thread's context. lws wsi objects are not
+     thread-safe: with MOD_AUDIO_FORK_SERVICE_THREADS > 1 every context has its
+     own service thread, and the only lws call that may cross threads is
+     lws_cancel_service (which is how these lists get drained -- each add wakes
+     the owning pipe's context). Draining another context's entries here would
+     invoke lws_callback_on_writable on a wsi its own thread may be servicing
+     concurrently. Entries for other contexts are left in place for their own
+     thread's wakeup to process. */
   std::list<AudioPipe*> disconnects;
   {
     std::lock_guard<std::mutex> guard(mutex_disconnects);
-    for (auto it = pendingDisconnects.begin(); it != pendingDisconnects.end(); ++it) {
-      if ((*it)->m_state == LWS_CLIENT_DISCONNECTING) disconnects.push_back(*it);
+    for (auto it = pendingDisconnects.begin(); it != pendingDisconnects.end(); ) {
+      AudioPipe* ap = *it;
+      if (ap->m_vhd && ap->m_vhd->context == vhd->context) {
+        if (ap->m_state == LWS_CLIENT_DISCONNECTING) disconnects.push_back(ap);
+        it = pendingDisconnects.erase(it);
+      }
+      else ++it;
     }
-    pendingDisconnects.clear();
   }
   for (auto it = disconnects.begin(); it != disconnects.end(); ++it) {
     AudioPipe* ap = *it;
-    lws_callback_on_writable(ap->m_wsi); 
+    lws_callback_on_writable(ap->m_wsi);
   }
 }
 
-void AudioPipe::processPendingWrites() {
+void AudioPipe::processPendingWrites(lws_per_vhost_data *vhd) {
+  /* per-context filtering: see processPendingDisconnects */
   std::list<AudioPipe*> writes;
   {
     std::lock_guard<std::mutex> guard(mutex_writes);
-    for (auto it = pendingWrites.begin(); it != pendingWrites.end(); ++it) {
-       if ((*it)->m_state == LWS_CLIENT_CONNECTED) writes.push_back(*it);
-    }  
-    pendingWrites.clear();
+    for (auto it = pendingWrites.begin(); it != pendingWrites.end(); ) {
+      AudioPipe* ap = *it;
+      if (ap->m_vhd && ap->m_vhd->context == vhd->context) {
+        if (ap->m_state == LWS_CLIENT_CONNECTED) writes.push_back(ap);
+        it = pendingWrites.erase(it);
+      }
+      else ++it;
+    }
   }
   for (auto it = writes.begin(); it != writes.end(); ++it) {
     AudioPipe* ap = *it;
@@ -427,13 +444,26 @@ AudioPipe* AudioPipe::findPendingConnect(struct lws *wsi) {
 }
 
 void AudioPipe::addPendingConnect(AudioPipe* ap) {
+  /* a service thread whose lws_create_context failed leaves its slot NULL;
+     round-robin over the live ones instead of dereferencing a dead slot */
+  struct lws_context* ctx = nullptr;
+  for (unsigned int i = 0; i < numContexts && !ctx; i++) {
+    ctx = contexts[nchild++ % numContexts];
+  }
+  if (!ctx) {
+    lwsl_err("%s AudioPipe::addPendingConnect no live lws context, failing connect\n", ap->m_uuid.c_str());
+    ap->m_state = LWS_CLIENT_FAILED;
+    ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::CONNECT_FAIL, "no lws context available");
+    ap->setClosed();  // keep the reaper's waitForClose() from blocking forever
+    return;
+  }
   {
     std::lock_guard<std::mutex> guard(mutex_connects);
     pendingConnects.push_back(ap);
-    lwsl_notice("%s after adding connect there are %lu pending connects\n", 
+    lwsl_notice("%s after adding connect there are %lu pending connects\n",
       ap->m_uuid.c_str(), pendingConnects.size());
   }
-  lws_cancel_service(contexts[nchild++ % numContexts]);
+  lws_cancel_service(ctx);
 }
 void AudioPipe::addPendingDisconnect(AudioPipe* ap) {
   ap->m_state = LWS_CLIENT_DISCONNECTING;
@@ -492,15 +522,16 @@ bool AudioPipe::lws_service_thread(unsigned int nServiceThread) {
 
   lwsl_notice("AudioPipe::lws_service_thread creating context in service thread %d.\n", nServiceThread);
 
-  contexts[nServiceThread] = lws_create_context(&info);
-  if (!contexts[nServiceThread]) {
-    lwsl_err("AudioPipe::lws_service_thread failed creating context in service thread %d..\n", nServiceThread); 
+  struct lws_context* myContext = lws_create_context(&info);
+  contexts[nServiceThread].store(myContext);
+  if (!myContext) {
+    lwsl_err("AudioPipe::lws_service_thread failed creating context in service thread %d..\n", nServiceThread);
     return false;
   }
 
   int n;
   do {
-    n = lws_service(contexts[nServiceThread], 0);
+    n = lws_service(myContext, 0);
   } while (n >= 0 && !stopRequested.load());
 
   lwsl_notice("AudioPipe::lws_service_thread ending in service thread %d\n", nServiceThread);
@@ -509,12 +540,25 @@ bool AudioPipe::lws_service_thread(unsigned int nServiceThread) {
 
 void AudioPipe::initialize(const char* protocol, unsigned int nThreads, int loglevel, log_emit_function logger) {
   assert(nThreads > 0 && nThreads <= 10);
+  lws_set_log_level(loglevel, logger);
+
+  if (nThreads > 1) {
+    /* Multi-context mode is capped to one service thread: the pending-CONNECT
+       list is shared across contexts, and the adopting service thread writes
+       ap->m_wsi / ap->m_vhd in connect_client() while another context's
+       ESTABLISHED/ERROR callback scans exactly those fields under
+       mutex_connects -- a ThreadSanitizer-verified data race in the identical
+       deepgram AudioPipe (and libwebsockets' own logging path also races
+       across service threads). Re-enable only after connect adoption is made
+       per-context. */
+    lwsl_err("AudioPipe::initialize %d service threads requested; capped to 1 (multi-context connect adoption is not thread-safe)\n", nThreads);
+    nThreads = 1;
+  }
 
   numContexts = nThreads;
   protocolName = protocol;
-  lws_set_log_level(loglevel, logger);
 
-  lwsl_notice("AudioPipe::initialize starting %d threads with subprotocol %s\n", nThreads, protocol); 
+  lwsl_notice("AudioPipe::initialize starting %d threads with subprotocol %s\n", nThreads, protocol);
   stopRequested.store(false);
   for (unsigned int i = 0; i < numContexts; i++) {
     serviceThreads.emplace_back(&AudioPipe::lws_service_thread, i);
