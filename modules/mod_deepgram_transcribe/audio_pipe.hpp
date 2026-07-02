@@ -95,7 +95,10 @@ private:
 
   static int lws_callback(struct lws *wsi, enum lws_callback_reasons reason, void *user, void *in, size_t len); 
   static std::atomic<unsigned int> nchild;
-  static struct lws_context *contexts[];
+  /* written by each service thread at startup (lws_create_context) and read
+     by connecting threads (addPendingConnect/addPendingWrite wake targets);
+     atomic slots give those cross-thread accesses a happens-before edge */
+  static std::atomic<struct lws_context*> contexts[];
   static unsigned int numContexts;
   static std::string protocolName;
   static std::mutex mutex_connects;

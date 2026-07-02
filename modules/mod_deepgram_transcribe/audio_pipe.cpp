@@ -294,9 +294,9 @@ static const lws_retry_bo_t retry = {
     0          // jitter_percent
 };
 
-struct lws_context *AudioPipe::contexts[] = {
-  nullptr, nullptr, nullptr, nullptr, nullptr,
-  nullptr, nullptr, nullptr, nullptr, nullptr
+std::atomic<struct lws_context*> AudioPipe::contexts[] = {
+  {nullptr}, {nullptr}, {nullptr}, {nullptr}, {nullptr},
+  {nullptr}, {nullptr}, {nullptr}, {nullptr}, {nullptr}
 };
 unsigned int AudioPipe::numContexts = 0;
 std::atomic<unsigned int> AudioPipe::nchild{0};
@@ -499,15 +499,16 @@ bool AudioPipe::lws_service_thread(unsigned int nServiceThread) {
 
   lwsl_notice("AudioPipe::lws_service_thread creating context in service thread %d.\n", nServiceThread);
 
-  contexts[nServiceThread] = lws_create_context(&info);
-  if (!contexts[nServiceThread]) {
-    lwsl_err("AudioPipe::lws_service_thread failed creating context in service thread %d..\n", nServiceThread); 
+  struct lws_context* myContext = lws_create_context(&info);
+  contexts[nServiceThread].store(myContext);
+  if (!myContext) {
+    lwsl_err("AudioPipe::lws_service_thread failed creating context in service thread %d..\n", nServiceThread);
     return false;
   }
 
   int n;
   do {
-    n = lws_service(contexts[nServiceThread], 0);
+    n = lws_service(myContext, 0);
   } while (n >= 0 && !stopRequested.load());
 
   lwsl_notice("AudioPipe::lws_service_thread ending in service thread %d\n", nServiceThread); 
