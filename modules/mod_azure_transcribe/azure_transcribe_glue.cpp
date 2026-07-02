@@ -65,8 +65,8 @@ public:
 		const char* region, 
 		const char* subscriptionKey, 
 		responseHandler_t responseHandler
-  ) : m_sessionId(sessionId), m_bugname(bugname), m_finished(false), m_stopped(false), m_interim(interim), 
-	 m_connected(false), m_connecting(false), m_audioBuffer(CHUNKSIZE, 15),
+  ) : m_sessionId(sessionId), m_bugname(bugname), m_finished(false), m_stopped(false), m_interim(interim),
+	 m_connected(false), m_connecting(false), m_canceled(false), m_audioBuffer(CHUNKSIZE, 15),
 	m_responseHandler(responseHandler) {
 
 		/* RAII: nearly every SDK call below can throw (SPX_THROW_HR in
@@ -197,13 +197,23 @@ public:
       switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_DEBUG, "added %d hints\n", argc);
 		}
 
-		auto onSessionStopped = [this](const SessionEventArgs& args) {
+		auto onSessionStopped = [this, responseHandler](const SessionEventArgs& args) {
 			if (m_finished) return;
 			SessionLock lock(m_sessionId.c_str());
 			m_stopped = true;
 			if (lock) {
 				auto sessionId = args.SessionId;
-				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer: got session stopped from microsoft\n");
+				/* m_finished is false, so this stop was NOT initiated by us: azure
+				   ended the session unilaterally (silence timeout, service stop).
+				   Previously only a DEBUG log -- the external consumer could not
+				   distinguish a dead recognizer from silence. Canceled already
+				   fires its own error event; skip the duplicate on that path. */
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "GStreamer: azure session stopped unexpectedly (not initiated by us)\n");
+				if (!m_canceled) {
+					responseHandler(lock.get(), TRANSCRIBE_EVENT_ERROR,
+						"{\"type\":\"error\",\"error\":\"azure speech session stopped unexpectedly\"}",
+						m_bugname.c_str(), m_finished);
+				}
 			}
 		};
 		auto onSpeechStartDetected = [this, responseHandler](const RecognitionEventArgs& args) {
@@ -259,6 +269,7 @@ public:
 
 		auto onCanceled = [this, responseHandler](const SpeechRecognitionCanceledEventArgs& args) {
       if (m_finished) return;
+			m_canceled = true;
 			SessionLock lock(m_sessionId.c_str());
 			switch_core_session_t* psession = lock.get();
 			if (psession) {
@@ -364,11 +375,13 @@ public:
       switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
         "GStreamer::write %p exception writing to push stream: %s\n", this, e.what());
       m_finished = true;
+      notifyWriteFailure(e.what());
       return false;
     } catch (...) {
       switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
         "GStreamer::write %p unknown exception writing to push stream\n", this);
       m_finished = true;
+      notifyWriteFailure("unknown exception writing to azure push stream");
       return false;
     }
 		return true;
@@ -412,6 +425,23 @@ public:
 		return m_stopped;
 	}
 
+	/* surface a push-stream write failure as an error event: streaming has
+	   stopped for good (m_finished is set) and without an event the external
+	   consumer cannot distinguish the dead stream from silence */
+	void notifyWriteFailure(const char* what) {
+		SessionLock lock(m_sessionId.c_str());
+		if (!lock) return;
+		cJSON* json = cJSON_CreateObject();
+		cJSON_AddStringToObject(json, "type", "error");
+		cJSON_AddStringToObject(json, "error", what);
+		char* jsonString = cJSON_PrintUnformatted(json);
+		if (jsonString) {
+			m_responseHandler(lock.get(), TRANSCRIBE_EVENT_ERROR, jsonString, m_bugname.c_str(), m_finished);
+			free(jsonString);
+		}
+		cJSON_Delete(json);
+	}
+
 	bool isConnecting() {
     return m_connecting;
   }
@@ -430,6 +460,7 @@ private:
 	std::atomic<bool> m_connected;
 	std::atomic<bool> m_connecting;
 	std::atomic<bool> m_stopped;
+	std::atomic<bool> m_canceled;
 	/* guards m_audioBuffer only. The media thread (write() -> add()) and the SDK
 	   SessionStarted callback thread (drain via getNumItems()/getNextChunk())
 	   both touch the non-thread-safe SimpleBuffer. This lock is never held across
