@@ -115,11 +115,32 @@ for m in <modules that autoload>; do
   r=$(fs_cli -x "module_exists $m" | tr -d '[:space:]')
   [ "$r" = true ] && echo "OK: $m" || { echo "FAIL: $m=$r"; tail -150 /tmp/fs.log; exit 1; }
 done
-# for a non-autoloaded module: load it, then require module_exists==true AND its API verb:
-fs_cli -x "load mod_audio_fork" >/dev/null; sleep 2
+```
+
+### Non-autoloaded modules: put them ON the autoload path for the gate
+Do NOT gate on `fs_cli -x "load mod_x"` into an already-running containerized
+FS. Measured during the v0.6.1 work: that path intermittently segfaults FS for
+ANY module — an unmodified baseline build died on manual load in 4 of 5 trials
+in `cb-fs-install-test`, while the same `.so` loaded fine every time on the
+autoload boot path (and under gdb's slowed startup). It is an in-container FS
+instability, not a module signal, and it produces convincing-looking false
+FAILs (and can mask real ones behind retries).
+
+For the gate, add the module to `autoload_configs/modules.conf.xml` in the
+container and assert `module_exists` after boot:
+
+```sh
+CONF=/usr/local/freeswitch/etc/freeswitch/autoload_configs/modules.conf.xml
+grep -q mod_audio_fork $CONF || \
+  sed -i 's|<load module="mod_aws_transcribe"/>|<load module="mod_aws_transcribe"/>\n    <load module="mod_audio_fork"/>|' $CONF
+# ...boot FS as above, then:
 [ "$(fs_cli -x 'module_exists mod_audio_fork'|tr -d '[:space:]')" = true ] && \
 [ "$(fs_cli -x 'show api'|grep -c '^uuid_audio_fork,')" -ge 1 ] && echo OK || { echo FAIL; exit 1; }
 ```
+
+If a manual `load` is unavoidable, wrap the WHOLE boot+load sequence in a
+retry loop (the mod_ttsd_transcribe `tests/loadtest` `bring_up()` pattern) and
+treat only repeated failures as a signal.
 
 Build is ~15–30 min at `JOBS=2`; the image is ~3.5 GB — delete it and the scratch
 context afterward. This catches real bugs: it caught a duplicate `m_gracefulShutdown`

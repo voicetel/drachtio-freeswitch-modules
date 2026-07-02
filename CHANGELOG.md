@@ -15,6 +15,16 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## v0.6.2 — 2026-07-02
+Docs only.
+- `docs/TESTING.md`: the Layer-3 load gate no longer recommends `fs_cli -x
+  "load mod_x"` into a running containerized FS — measured during the v0.6.1
+  work, that path intermittently segfaults FS for ANY module (an unmodified
+  baseline died on manual load in 4/5 trials) and produces convincing false
+  FAILs. Gate via the autoload boot path (modules.conf.xml) instead, with the
+  retry-wrapped boot+load sequence as the fallback when manual load is
+  unavoidable.
+
 ## v0.6.1 — 2026-07-02
 
 Completes the v0.6.0 review: the shared-lineage AudioPipe fixes ported to
