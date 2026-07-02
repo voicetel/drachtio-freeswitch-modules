@@ -585,7 +585,13 @@ extern "C" {
         frame.buflen = SWITCH_RECOMMENDED_BUFFER_SIZE;
         while (switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS) {
           if (frame.datalen) {
-            spx_uint32_t out_len = available >> 1;  // space for samples which are 2 bytes
+            /* speex's interleaved API takes out_len in samples PER CHANNEL and
+               may write out_len * channels samples (2 bytes each). Sizing it as
+               available/2 ignored the channel count and let a stereo resample
+               write up to 2x the remaining ring-buffer space (heap overflow
+               past m_audio_buffer). Divide by bytes-per-frame instead; the
+               bytes_written accounting below already multiplies back. */
+            spx_uint32_t out_len = available / (2 * tech_pvt->channels);
             spx_uint32_t in_len = frame.samples;
 
             speex_resampler_process_interleaved_int(tech_pvt->resampler, 
