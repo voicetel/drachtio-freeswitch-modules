@@ -317,10 +317,14 @@ namespace {
               // The AudioPipe is NOT cleared here; it stays valid until the reaper
               // deletes it during cleanup. dg_transcribe_frame gates on the
               // connection state, so it will not use a failed pipe.
+              /* lws passes a NULL error string for some connect failures (the
+                 AudioPipe forwards its `in` pointer as-is); streaming NULL into
+                 an ostream or %s is undefined behavior */
+              const char* reason = message ? message : "unknown";
               std::stringstream json;
-              json << "{\"reason\":\"" << message << "\"}";
+              json << "{\"reason\":\"" << reason << "\"}";
               tech_pvt->responseHandler(session, TRANSCRIBE_EVENT_CONNECT_FAIL, (char *) json.str().c_str(), tech_pvt->bugname, finished);
-              switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "connection failed: %s\n", message);
+              switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "connection failed: %s\n", reason);
             }
             break;
             case deepgram::AudioPipe::CONNECTION_DROPPED:
