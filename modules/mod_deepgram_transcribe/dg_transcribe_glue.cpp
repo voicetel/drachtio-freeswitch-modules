@@ -105,7 +105,25 @@ namespace {
       return false;
   }
 
-  static const char* emptyTranscript = "{\"alternatives\":[{\"transcript\":\"\",\"confidence\":0.0,\"words\":[]}]}";
+  /* Walk a parsed deepgram payload counting "transcript" string fields and how
+     many are non-empty, across whatever nesting (channel.alternatives[],
+     multichannel channels[], utterances[]) the message uses. Used to discard a
+     message only when it carries transcripts and ALL of them are empty --
+     the previous whole-payload strstr against one exact serialization dropped
+     any message merely CONTAINING an empty first alternative, losing real
+     content in multi-alternative/multichannel results. */
+  static void countTranscripts(cJSON* node, int& total, int& nonEmpty) {
+    if (!node) return;
+    for (cJSON* child = node->child; child; child = child->next) {
+      if (child->string && 0 == strcmp(child->string, "transcript") &&
+          (child->type & 0xFF) == cJSON_String) {
+        total++;
+        if (child->valuestring && child->valuestring[0] != '\0') nonEmpty++;
+      }
+      int t = child->type & 0xFF;
+      if (t == cJSON_Object || t == cJSON_Array) countTranscripts(child, total, nonEmpty);
+    }
+  }
 
   // Hand the AudioPipe off to a detached thread that closes the connection,
   // waits for the lws CLOSED to be signalled, then deletes it (via the
@@ -337,13 +355,26 @@ namespace {
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "connection closed gracefully\n");
             break;
             case deepgram::AudioPipe::MESSAGE:
-              if( strstr(message, emptyTranscript)) {
+            {
+              bool discard = false;
+              cJSON* json = cJSON_Parse(message);
+              if (json) {
+                int total = 0, nonEmpty = 0;
+                countTranscripts(json, total, nonEmpty);
+                /* only messages that carry transcripts, all of them empty; a
+                   parse failure or transcript-free payload (e.g. Metadata) is
+                   forwarded untouched as before */
+                discard = (total > 0 && nonEmpty == 0);
+                cJSON_Delete(json);
+              }
+              if (discard) {
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "discarding empty deepgram transcript\n");
               }
               else {
                 tech_pvt->responseHandler(session, TRANSCRIBE_EVENT_RESULTS, message, tech_pvt->bugname, finished);
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "deepgram message: %s\n", message);
               }
+            }
             break;
 
             default:
