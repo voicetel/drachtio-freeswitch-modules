@@ -373,8 +373,19 @@ public:
 		m_recognizer->Canceled.DisconnectAll();
 		m_recognizer->SessionStarted.DisconnectAll();
 
-		m_recognizer->StopContinuousRecognitionAsync().get();
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "GStreamer::finish - recognition has completed (%p)\n", this);
+		try {
+			m_recognizer->StopContinuousRecognitionAsync().get();
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "GStreamer::finish - recognition has completed (%p)\n", this);
+		} catch (const std::exception& e) {
+			/* .get() rethrows any exception the async stop stored (the SDK throws
+			   SPX_THROW_HR liberally, e.g. stopping a start whose connection
+			   already failed). finish() runs on a DETACHED reaper thread -- an
+			   escaping exception is std::terminate for all of FreeSWITCH. The
+			   handlers are already disconnected above, so teardown may proceed. */
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "GStreamer::finish - StopContinuousRecognitionAsync failed (%p): %s\n", this, e.what());
+		} catch (...) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "GStreamer::finish - StopContinuousRecognitionAsync failed (%p): unknown exception\n", this);
+		}
 	}
 
 	bool isStopped() {
