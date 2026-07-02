@@ -517,11 +517,23 @@ bool AudioPipe::lws_service_thread(unsigned int nServiceThread) {
 
 void AudioPipe::initialize(unsigned int nThreads, int loglevel, log_emit_function logger) {
   assert(nThreads > 0 && nThreads <= 10);
-
-  numContexts = nThreads;
   lws_set_log_level(loglevel, logger);
 
-  lwsl_notice("AudioPipe::initialize starting %d threads\n", nThreads); 
+  if (nThreads > 1) {
+    /* Multi-context mode is capped to one service thread: the pending-CONNECT
+       list is shared across contexts, and the adopting service thread writes
+       ap->m_wsi / ap->m_vhd in connect_client() while another context's
+       ESTABLISHED/ERROR callback scans exactly those fields under
+       mutex_connects -- a ThreadSanitizer-verified data race (and
+       libwebsockets' own logging path also races across service threads).
+       Re-enable only after connect adoption is made per-context. */
+    lwsl_err("AudioPipe::initialize %d service threads requested; capped to 1 (multi-context connect adoption is not thread-safe)\n", nThreads);
+    nThreads = 1;
+  }
+
+  numContexts = nThreads;
+
+  lwsl_notice("AudioPipe::initialize starting %d threads\n", nThreads);
   stopRequested.store(false);
   for (unsigned int i = 0; i < numContexts; i++) {
     serviceThreads.emplace_back(&AudioPipe::lws_service_thread, i);
