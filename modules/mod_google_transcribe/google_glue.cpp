@@ -227,9 +227,11 @@ public:
       auto *context = config->add_speech_contexts();
       float boost = -1;
 
-      // get boost setting for the phrase set in its entirety
-      if (switch_true(switch_channel_get_variable(channel, "GOOGLE_SPEECH_HINTS_BOOST"))) {
-     	  boost = (float) atof(switch_channel_get_variable(channel, "GOOGLE_SPEECH_HINTS_BOOST"));
+      // get boost setting for the phrase set in its entirety. Gate on the var
+      // being SET, not switch_true(): fractional boosts ("0.5") atoi to 0 and
+      // were silently ignored, while "true"-ish garbage passed and set 0.0.
+      if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_HINTS_BOOST"))) {
+     	  boost = (float) atof(var);
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(m_session), SWITCH_LOG_DEBUG, "boost value: %f\n", boost);
         phrase_set->set_boost(boost);
       }
@@ -241,10 +243,16 @@ public:
         int i = 0;
         cJSON *jPhrase = NULL;
         cJSON_ArrayForEach(jPhrase, jHint) {
-          auto* phrase = phrase_set->add_phrases();
           cJSON *jItem = cJSON_GetObjectItem(jPhrase, "phrase");
-          if (jItem) {
-            phrase->set_value(cJSON_GetStringValue(jItem));
+          /* cJSON_GetStringValue returns NULL for a non-string "phrase"
+             ([{"phrase":123}]) and protobuf set_value(const char*) would
+             construct std::string from NULL -- crash on operator-provided
+             config. Also stop add_phrases()ing empty entries for objects
+             with no usable phrase. */
+          const char* sPhrase = jItem ? cJSON_GetStringValue(jItem) : NULL;
+          if (sPhrase) {
+            auto* phrase = phrase_set->add_phrases();
+            phrase->set_value(sPhrase);
             switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(m_session), SWITCH_LOG_DEBUG, "phrase: %s\n", phrase->value().c_str());
             if (cJSON_GetObjectItem(jPhrase, "boost")) {
               phrase->set_boost((float) cJSON_GetObjectItem(jPhrase, "boost")->valuedouble);
