@@ -655,12 +655,15 @@ extern "C" {
     switch_status_t google_speech_init() {
       const char* gcsServiceKeyFile = std::getenv("GOOGLE_APPLICATION_CREDENTIALS");
       if (gcsServiceKeyFile) {
-        try {
-          auto creds = grpc::GoogleDefaultCredentials();
-        } catch (const std::exception& e) {
-          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, 
-            "Error initializing google api with provided credentials in %s: %s\n", gcsServiceKeyFile, e.what());
-          return SWITCH_STATUS_FALSE;
+        /* GoogleDefaultCredentials never throws -- it returns a null
+           shared_ptr on failure (grpc secure_credentials.cc), so the previous
+           try/catch was a no-op that could not catch anything. Check the
+           pointer and warn; module load proceeds either way (credentials can
+           also be supplied per-channel). */
+        auto creds = grpc::GoogleDefaultCredentials();
+        if (!creds) {
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+            "GOOGLE_APPLICATION_CREDENTIALS (%s) did not yield usable default credentials; transcribe starts relying on them will fail\n", gcsServiceKeyFile);
         }
       }
       return SWITCH_STATUS_SUCCESS;
@@ -749,8 +752,18 @@ extern "C" {
          profanity_filter, word_time_offset, punctuation, model, enhanced, hints);
         cb->streamer.store(streamer);
       } catch (std::exception& e) {
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "%s: Error initializing gstreamer: %s.\n", 
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "%s: Error initializing gstreamer: %s.\n",
           switch_channel_get_name(channel), e.what());
+        /* the resampler and vad were allocated above and cleanup never runs
+           for a failed init (no bug is ever added) -- free them here */
+        if (cb->resampler) {
+          speex_resampler_destroy(cb->resampler);
+          cb->resampler = NULL;
+        }
+        if (cb->vad) {
+          switch_vad_destroy(&cb->vad);
+          cb->vad = nullptr;
+        }
         return SWITCH_STATUS_FALSE;
       }
 

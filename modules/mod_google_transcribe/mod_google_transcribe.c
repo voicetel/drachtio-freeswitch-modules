@@ -359,8 +359,13 @@ SWITCH_STANDARD_API(transcribe2_function)
 				if (argc > 10) {
 					sample_rate = atol(argv[10]);
 				}
+				/* model (argv[11]) and enhanced (argv[12]) gated separately: the
+			   combined argc > 12 gate silently ignored a model supplied as the
+			   12th argument without an enhanced flag after it */
+				if (argc > 11){
+					model = argv[11]; // model
+				}
 				if (argc > 12){
-					model = argv[11]; // model 
 					enhanced = !strcmp(argv[12], "true"); // enhanced
 				}
 				if (argc > 13){
