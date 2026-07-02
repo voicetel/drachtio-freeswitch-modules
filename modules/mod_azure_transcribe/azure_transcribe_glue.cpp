@@ -120,7 +120,13 @@ public:
 
     if (nullptr != proxyIP && nullptr != proxyPort) {
       switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(psession), SWITCH_LOG_DEBUG, "setting proxy: %s:%s\n", proxyIP, proxyPort);
-      speechConfig->SetProxy(proxyIP, atoi(proxyPort), proxyUsername, proxyPassword);
+      /* username/password are raw getenv results and NULL for an
+         unauthenticated proxy; SetProxy takes SPXSTRING (std::string) and
+         std::string(nullptr) is UB. The SDK's own defaults for these
+         parameters are empty SPXSTRING()s (speechapi_cxx_speech_config.h:377),
+         so empty string IS the SDK's no-credentials value. */
+      speechConfig->SetProxy(proxyIP, atoi(proxyPort),
+        proxyUsername ? proxyUsername : "", proxyPassword ? proxyPassword : "");
     }
 
 		m_pushStream = AudioInputStream::CreatePushStream(format);
