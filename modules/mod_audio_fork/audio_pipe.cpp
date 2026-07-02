@@ -159,9 +159,31 @@ int AudioPipe::lws_callback(struct lws *wsi,
         if (lws_is_first_fragment(wsi)) {
           // allocate a buffer for the entire chunk of memory needed
           assert(nullptr == ap->m_recv_buf);
+          ap->m_recv_buf_discarding = false;
           ap->m_recv_buf_len = len + lws_remaining_packet_payload(wsi);
           ap->m_recv_buf = (uint8_t*) malloc(ap->m_recv_buf_len);
+          if (nullptr == ap->m_recv_buf) {
+            lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE recv buffer alloc failed, dropping message.\n");
+            ap->m_recv_buf_len = 0;
+            ap->m_recv_buf_discarding = !lws_is_final_fragment(wsi);
+            return 0;
+          }
           ap->m_recv_buf_ptr = ap->m_recv_buf;
+        }
+
+        if (ap->m_recv_buf_discarding) {
+          // Already abandoned this message (oversized, or its buffer alloc
+          // failed) on an earlier fragment. lws's first/final-fragment tracking
+          // is per-message, not aware of that abandonment, so without this
+          // check the code below would treat this continuation fragment as the
+          // start of a brand-new message -- and if it happens to be the
+          // message's final fragment, would deliver a truncated/garbled tail as
+          // a "complete" message instead of dropping it. Keep dropping
+          // fragments until the (abandoned) message actually ends.
+          if (lws_is_final_fragment(wsi)) {
+            ap->m_recv_buf_discarding = false;
+          }
+          return 0;
         }
 
         size_t write_offset = ap->m_recv_buf_ptr - ap->m_recv_buf;
@@ -173,13 +195,27 @@ int AudioPipe::lws_callback(struct lws *wsi,
             free(ap->m_recv_buf);
             ap->m_recv_buf = ap->m_recv_buf_ptr = nullptr;
             ap->m_recv_buf_len = 0;
+            ap->m_recv_buf_discarding = !lws_is_final_fragment(wsi);
             lwsl_notice("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE max buffer exceeded, truncating message.\n");
           }
           else {
-            ap->m_recv_buf = (uint8_t*) realloc(ap->m_recv_buf, newlen);
-            if (nullptr != ap->m_recv_buf) {
+            uint8_t* grown = (uint8_t*) realloc(ap->m_recv_buf, newlen);
+            if (nullptr != grown) {
+              ap->m_recv_buf = grown;
               ap->m_recv_buf_len = newlen;
               ap->m_recv_buf_ptr = ap->m_recv_buf + write_offset;
+            }
+            else {
+              // realloc failure leaves the original block valid: assigning the
+              // nullptr over m_recv_buf directly would leak it and leave
+              // m_recv_buf_ptr/m_recv_buf_len stale (poisoning the offset math
+              // of every later fragment). Drop the message and free the old
+              // buffer instead, then swallow fragments until it ends.
+              lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE recv buffer realloc failed, dropping message.\n");
+              free(ap->m_recv_buf);
+              ap->m_recv_buf = ap->m_recv_buf_ptr = nullptr;
+              ap->m_recv_buf_len = 0;
+              ap->m_recv_buf_discarding = !lws_is_final_fragment(wsi);
             }
           }
         }
@@ -509,7 +545,8 @@ AudioPipe::AudioPipe(const char* uuid, const char* host, unsigned int port, cons
   m_uuid(uuid), m_host(host), m_port(port), m_path(path), m_sslFlags(sslFlags),
   m_audio_buffer_min_freespace(minFreespace), m_audio_buffer_max_len(bufLen), m_gracefulShutdown(false),
   m_closePending(false),
-  m_audio_buffer_write_offset(LWS_PRE), m_recv_buf(nullptr), m_recv_buf_ptr(nullptr), m_bugname(bugname),
+  m_audio_buffer_write_offset(LWS_PRE), m_recv_buf(nullptr), m_recv_buf_ptr(nullptr),
+  m_recv_buf_discarding(false), m_bugname(bugname),
   m_state(LWS_CLIENT_IDLE), m_wsi(nullptr), m_vhd(nullptr), m_callback(callback),
   m_closeSignaled(false) {
 
