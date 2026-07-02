@@ -20,5 +20,14 @@ RUN g++ -std=c++11 -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
         soak_audiopipe.cpp audio_pipe.cpp $(pkg-config --cflags --libs libwebsockets) -lpthread -o soak_asan
 RUN g++ -std=c++11 -g -O1 -fsanitize=thread -fno-omit-frame-pointer \
         soak_audiopipe.cpp audio_pipe.cpp $(pkg-config --cflags --libs libwebsockets) -lpthread -o soak_tsan
+# deepgram AudioPipe variant (same lws transport lineage; TLS-only dialer, so
+# every connect terminates via CONNECT_FAIL against the plain-ws mock -- see
+# soak_deepgram.cpp for exactly what that does and does not exercise)
+COPY modules/mod_deepgram_transcribe/audio_pipe.cpp modules/mod_deepgram_transcribe/audio_pipe.hpp tests/soak/soak_deepgram.cpp dg/
+COPY tests/soak/tsan.supp ./
+RUN g++ -std=c++11 -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
+        dg/soak_deepgram.cpp dg/audio_pipe.cpp $(pkg-config --cflags --libs libwebsockets) -lpthread -o soak_dg_asan
+RUN g++ -std=c++11 -g -O1 -fsanitize=thread -fno-omit-frame-pointer \
+        dg/soak_deepgram.cpp dg/audio_pipe.cpp $(pkg-config --cflags --libs libwebsockets) -lpthread -o soak_dg_tsan
 RUN chmod +x run.sh
 CMD ["./run.sh"]

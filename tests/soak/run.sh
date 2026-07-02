@@ -20,8 +20,16 @@ run_one() {
 export ASAN_OPTIONS="detect_leaks=1:halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1"
 export TSAN_OPTIONS="halt_on_error=0:second_deadlock_stack=1:history_size=4"
 
-run_one "ASan + UBSan + LeakSanitizer" soak_asan
-run_one "ThreadSanitizer" soak_tsan
+run_one "mod_audio_fork AudioPipe: ASan + UBSan + LeakSanitizer" soak_asan
+run_one "mod_audio_fork AudioPipe: ThreadSanitizer" soak_tsan
+
+run_one "mod_deepgram_transcribe AudioPipe: ASan + UBSan + LeakSanitizer" soak_dg_asan
+# lws-internal logging races are suppressed for the deepgram run (see tsan.supp;
+# our own frames are never suppressed by a called_from_lib rule)
+SAVED_TSAN="$TSAN_OPTIONS"
+export TSAN_OPTIONS="$TSAN_OPTIONS:suppressions=/opt/soak/tsan.supp"
+run_one "mod_deepgram_transcribe AudioPipe: ThreadSanitizer" soak_dg_tsan
+export TSAN_OPTIONS="$SAVED_TSAN"
 
 echo "================== OVERALL: $([ $rc -eq 0 ] && echo PASS || echo FAIL) =================="
 exit $rc

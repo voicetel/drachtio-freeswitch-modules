@@ -1,0 +1,7 @@
+# ThreadSanitizer suppressions for the AudioPipe soaks.
+#
+# libwebsockets-internal only: its logging/date-string path shares a global
+# buffer across service threads (lws_snprintf into a static). Third-party
+# code -- races whose every frame is inside libwebsockets.so. Our own frames
+# are never suppressed by this rule.
+called_from_lib:libwebsockets.so
