@@ -381,10 +381,17 @@ public:
     if (!m_connected) {
       cancelConnect();
     }
-    else if (!m_writesDone) {
+    else {
+      /* the flag must be re-checked UNDER the lock: the gRPC read thread
+         (END_OF_SINGLE_UTTERANCE) and the stop/hangup cleanup thread can both
+         reach here concurrently -- with the check outside the lock both passed
+         it, then serialized on the mutex and each issued WritesDone(), the
+         double half-close this function's own comment says crashes grpc */
       std::lock_guard<std::mutex> lk(m_write_mutex);
-      m_streamer->WritesDone();
-      m_writesDone = true;
+      if (!m_writesDone) {
+        m_streamer->WritesDone();
+        m_writesDone = true;
+      }
     }
 	}
 
