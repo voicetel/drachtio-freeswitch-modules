@@ -419,6 +419,12 @@ static void *SWITCH_THREAD_FUNC aws_transcribe_thread(switch_thread_t *thread, v
 		cb->responseHandler);
   if (!cb->vad) pStreamer->connect();
 	cb->streamer.store(pStreamer);
+	/* a stop/hangup may have arrived while the constructor was running: it
+	   found cb->streamer NULL, had nothing to finish(), and is (or will be)
+	   blocked in switch_thread_join. It sets stop_requested BEFORE loading
+	   cb->streamer and we re-check AFTER publishing it, so between the two
+	   orderings the request can never fall through the crack. */
+	if (cb->stop_requested.load()) pStreamer->finish();
 	pStreamer->processData(); //blocks until done
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcribe_thread: stopping cb %p\n", (void *) cb);
@@ -618,6 +624,9 @@ extern "C" {
 
 			// close connection and get final responses
 			switch_mutex_lock(cb->mutex);
+			/* order matters: set the flag before loading the pointer (the worker
+			   publishes the pointer, then checks the flag) */
+			cb->stop_requested.store(1);
 			GStreamer* streamer = (GStreamer *) cb->streamer.load();
 			if (streamer) {
 				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "aws_transcribe_session_stop: finish..%s\n", bugname);
@@ -659,7 +668,9 @@ extern "C" {
 			"aws_transcribe_session_cleanup: tearing down orphaned cb %p (media bug never attached)\n", (void *) cb);
 
 		/* signal the worker thread to stop, then join it. The thread deletes the
-		   GStreamer and clears cb->streamer on exit. */
+		   GStreamer and clears cb->streamer on exit. Flag first, then load: see
+		   aws_transcribe_session_stop. */
+		cb->stop_requested.store(1);
 		GStreamer* streamer = (GStreamer *) cb->streamer.load();
 		if (streamer) {
 			streamer->finish();

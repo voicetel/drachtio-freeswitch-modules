@@ -55,6 +55,17 @@ struct cap_cb {
 
 	switch_vad_t * vad;
 	uint32_t samples_per_second;
+	/* Set by stop/cleanup BEFORE they load cb->streamer; re-checked by the
+	   worker right AFTER it publishes cb->streamer. Closes the window where a
+	   stop lands while the GStreamer constructor is still running: the stop
+	   found no streamer to finish() and then blocked forever (VAD path) in
+	   switch_thread_join on a worker nothing would ever wake. Same
+	   C/C++ ABI pattern as streamer above (the .c file never touches it). */
+#ifdef __cplusplus
+	std::atomic<int> stop_requested;
+#else
+	int stop_requested;
+#endif
 };
 
 #endif
