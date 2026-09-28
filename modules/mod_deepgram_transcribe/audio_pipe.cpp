@@ -117,13 +117,17 @@ int AudioPipe::lws_callback(struct lws *wsi,
           ap->m_callback(ap->m_uuid.c_str(), AudioPipe::CONNECTION_DROPPED, NULL,  ap->isFinished());
         }
         ap->m_state = LWS_CLIENT_DISCONNECTED;
-        ap->setClosed();
-    
-        //NB: after receiving any of the events above, any holder of a 
-        //pointer or reference to this object must treat is as no longer valid
 
-        //*ppAp = NULL;
-        //delete ap;
+        //NB: the AudioPipe is NOT deleted here. The lws service thread may not be
+        //the last user of it (a media-bug thread could still hold it), so deletion
+        //is deferred to the reaper, which deletes only after the media bug has been
+        //removed AND this close has been signalled. We just fulfil the promise.
+        //Clearing the per-wsi pointer matters: any callback lws still delivers on
+        //this wsi after CLOSED must see NULL (the reaper may already have deleted
+        //the pipe once setClosed unblocked it), not a dangling pointer. Matches
+        //the ancestor copy.
+        ap->setClosed();
+        *ppAp = NULL;
       }
       break;
 
