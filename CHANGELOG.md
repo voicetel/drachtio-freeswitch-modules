@@ -35,6 +35,87 @@ instrumentation (e2d2c07) — behavior change: it is now opt-in.
 - README: documented the new variable, fixed the `1RECOGNIZER_VAD` typo and
   the duplicated `no_audio_detected` event entry.
 
+Full adversarial review of the maintained surface at HEAD (all five
+maintained modules + tests/docs infra), one commit per issue:
+
+### mod_audio_fork (+ the deepgram lineage copy, kept aligned)
+- **Stereo resample heap overflow** — `out_len = available >> 1` sized speex's
+  interleaved output in mono samples; a stereo resample could write 2x the
+  remaining ring-buffer space past `m_audio_buffer`. Deepgram's fix (5d6fc36)
+  was never ported to the ancestor despite it exposing stereo.
+- **`argv[4]` NULL deref** — `start` with the sampling rate omitted crashed
+  the FS process; the argc guard required 4 args, the handler strcmp'd the 5th.
+- **`tech_pvt->mutex` destroyed while held, with possible lws-thread waiter** —
+  UB: crash or a frozen service thread stalling every session. Port of the
+  deepgram pool-owned-mutex fix.
+- **CONNECT_SUCCESS raced the reaper** on `pAudioPipe` — null/freed-pipe
+  metadata send; now fetched under the reaper's lock.
+- **`close()` racing a far-end drop called `lws_callback_on_writable` on a
+  freed wsi** — the DISCONNECTING store is now a CAS from CONNECTED.
+- **`findAndRemovePendingConnect`'s null-wsi sweep orphaned IDLE pipes** —
+  reaper blocked in `waitForClose()` forever, pipe + thread leaked (both
+  lineage copies).
+- Graceful shutdown during the WS handshake never completed (flush frame
+  never sent; also a null-`m_vhd` deref on unadopted pipes) — record-and-
+  complete-at-ESTABLISHED, matching `close()`'s 6077c8e pattern.
+- media-bug-add failure leaked the never-attached AudioPipe; `tech_pvt->id`
+  dereferenced before its null guard; `strncpy` into same-sized buffers never
+  NUL-terminated; graceful zero-length `lws_write` failure silently ignored.
+- Raw lws connect-error string broke the CONNECT_FAIL event JSON (cJSON now,
+  both modules); `constructPath` could emit `?&model=` and a duplicate
+  `model=` key (deepgram); deepgram header guard was the copy-pasted aws one;
+  dead code removed; READMEs document the real command surface.
+
+### mod_aws_transcribe
+- **Transcript left set when the session was gone** — the wait predicate held
+  forever: 100% CPU busy-spin, and the v0.6.1 bounded shutdown **failed open**
+  (`wait_for` returned immediately, so `DisableRequestProcessing` was never
+  reached) exactly on dead-network hangs; `session_stop`'s join hung.
+- **Concurrent stop used the media bug after the first stop freed it** — an
+  API stop racing the hangup CLOSE (second `stop` during the 10s+ join window)
+  ended in `switch_core_media_bug_remove` on a dangling pointer.
+- Failed load leaked reserved event subclasses until FS restart; unload ran
+  `Aws::ShutdownAPI` under live streaming clients (now refused while sessions
+  are active); worker-vs-SDK-callback lock-order inversion; shutdown deadline
+  restarted on every wake (now armed once at Close); `catch (...)` on the
+  worker; dead code and misleading logs; README documented a nonexistent
+  command (`aws_transcribe` vs `uuid_aws_transcribe`) plus half the surface.
+
+### mod_azure_transcribe
+- **Write failure during the prebuffer drain silenced the recognizer forever**
+  — the exact v0.6.0 defect class, missed on the drain path: `m_finished` set,
+  `notifyWriteFailure()` never called, no later event could fire.
+- **Terminal Canceled/unexpected-stop events carried
+  `transcription-session-finished=false`** — nothing terminal ever followed;
+  the consumer could never learn the session ended.
+- `switch_separate_string` truncated channel variables in place
+  (ALTERNATIVE_LANGUAGE_CODES, HINTS) — a restart on the same channel saw only
+  the first token.
+- Concurrent same-bugname starts orphaned a live recognizer at hangup (CLOSE
+  now stops its own `cb`); stereo media-bug read could smash the 8KB stack
+  buffer on wideband/long-ptime codecs (**same hardening applied to
+  google/aws/deepgram/audio_fork**); unload crashed via reaper/SDK threads
+  running unmapped module code (now refused while recognizers exist); VAD was
+  initialized mono on stereo captures; the error subclass was fired but never
+  reserved; dead `AudioProcessingOptions` creation; dead code; README
+  documented a nonexistent command and much else wrong.
+
+### tests / docs / infra
+- The audio_fork soak could not fail on a reaper leak — ported deepgram's
+  100% reaper-completion gate (a `waitForClose` hang now exits non-zero).
+- The mock never exercised the oversized/fragmented inbound paths — added
+  `WS_OVERSIZED_EVERY` (fragmented and >650KB messages), enabled in `run.sh`;
+  also fixed `run.sh` double-starting the mocks after that change.
+- Versioned the coverage-artifact gitignore entries; removed a
+  self-referential symlink in mod_google_tts; soak README scenario names now
+  match the code; TESTING.md leads with the autoload load-gate and documents
+  the installer's provenance; soak scripts got exec bits and skip the unused
+  drop-mock for the TLS-only deepgram runs.
+
+Verification: host unit tests 9/9 + ASan/UBSan clean. The module changes
+require the Docker build/load gate and both soaks (docs/TESTING.md Layer 3-4)
+before release-tagging.
+
 ## v0.6.3 — 2026-07-02
 Docs only — a docs-vs-code audit found two shipped claims contradicting the
 code after v0.6.1:
