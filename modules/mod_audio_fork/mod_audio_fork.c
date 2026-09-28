@@ -276,7 +276,13 @@ SWITCH_STANDARD_API(fork_function)
         if (!parse_ws_uri(channel, argv[2], &host[0], &path[0], &port, &sslFlags)) {
           switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "invalid websocket uri: %s\n", argv[2]);
         }
-		else if (sampling % 8000 != 0) {
+        /* bound the rate: it is an int multiplied into the ring-buffer size
+           (FRAME_SIZE_8000 * sampling / 8000 * ... in fork_data_init), so a
+           large multiple of 8000 (e.g. 8000000) overflowed int there, wrapped
+           negative, and new[]'d ~2^64 bytes -> std::bad_alloc across the
+           extern "C" boundary -> std::terminate. atoi() on a non-numeric
+           yields 0, caught by the <= 0. 48kHz is speex's widest rate. */
+		else if (sampling <= 0 || sampling > 48000 || sampling % 8000 != 0) {
           switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "invalid sample rate: %s\n", argv[4]);
 		}
         else {
