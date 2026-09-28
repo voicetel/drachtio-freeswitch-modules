@@ -5,16 +5,16 @@ cd /opt/soak
 rc=0
 
 run_one() {
-  local label="$1" bin="$2"
+  local label="$1" bin="$2" need_drop_mock="${3:-1}"
   echo "================== ${label} =================="
-  WS_PORT=9000 python3 ws_mock.py 9000 >/tmp/ws9000.log 2>&1 &  W1=$!
-  WS_DROP_AFTER=0.3 WS_PORT=9001 python3 ws_mock.py 9001 >/tmp/ws9001.log 2>&1 & W2=$!
-  sleep 1
   # WS_OVERSIZED_EVERY: the mocks also send fragmented + >650KB inbound
   # messages, exercising the recv reassembly and oversized-discard paths
   # (regression coverage for the c31364f class)
   WS_OVERSIZED_EVERY="${WS_OVERSIZED_EVERY:-500}" WS_PORT=9000 python3 ws_mock.py 9000 >/tmp/ws9000.log 2>&1 &  W1=$!
-  WS_OVERSIZED_EVERY="${WS_OVERSIZED_EVERY:-500}" WS_DROP_AFTER=0.3 WS_PORT=9001 python3 ws_mock.py 9001 >/tmp/ws9001.log 2>&1 & W2=$!
+  W2=""
+  if [ "$need_drop_mock" = "1" ]; then
+    WS_OVERSIZED_EVERY="${WS_OVERSIZED_EVERY:-500}" WS_DROP_AFTER=0.3 WS_PORT=9001 python3 ws_mock.py 9001 >/tmp/ws9001.log 2>&1 & W2=$!
+  fi
   sleep 1
   ITER="${ITER:-200}" WORKERS="${WORKERS:-4}" WS_PORT=9000 WS_DROP_PORT=9001 setarch -R ./"$bin"
   local r=$?
@@ -29,12 +29,14 @@ export TSAN_OPTIONS="halt_on_error=0:second_deadlock_stack=1:history_size=4"
 run_one "mod_audio_fork AudioPipe: ASan + UBSan + LeakSanitizer" soak_asan
 run_one "mod_audio_fork AudioPipe: ThreadSanitizer" soak_tsan
 
-run_one "mod_deepgram_transcribe AudioPipe: ASan + UBSan + LeakSanitizer" soak_dg_asan
+# the deepgram runs never complete a connection (TLS handshake fails against
+# the plain-ws mock), so they make no use of the 9001 drop instance
+run_one "mod_deepgram_transcribe AudioPipe: ASan + UBSan + LeakSanitizer" soak_dg_asan 0
 # lws-internal logging races are suppressed for the deepgram run (see tsan.supp;
 # our own frames are never suppressed by a called_from_lib rule)
 SAVED_TSAN="$TSAN_OPTIONS"
 export TSAN_OPTIONS="$TSAN_OPTIONS:suppressions=/opt/soak/tsan.supp"
-run_one "mod_deepgram_transcribe AudioPipe: ThreadSanitizer" soak_dg_tsan
+run_one "mod_deepgram_transcribe AudioPipe: ThreadSanitizer" soak_dg_tsan 0
 export TSAN_OPTIONS="$SAVED_TSAN"
 
 echo "================== OVERALL: $([ $rc -eq 0 ] && echo PASS || echo FAIL) =================="
