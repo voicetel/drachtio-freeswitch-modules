@@ -270,10 +270,16 @@ namespace {
 
     memset(tech_pvt, 0, sizeof(private_t));
   
-    strncpy(tech_pvt->sessionId, switch_core_session_get_uuid(session), MAX_SESSION_ID);
-    strncpy(tech_pvt->host, host, MAX_WS_URL_LEN);
+    /* every one of these destinations is exactly N bytes (no +1), so a source
+       of N or more chars left strncpy without its NUL -- later %s logging,
+       lws API calls, and strlen walked past the buffer. Copy N-1 and terminate. */
+    strncpy(tech_pvt->sessionId, switch_core_session_get_uuid(session), sizeof(tech_pvt->sessionId) - 1);
+    tech_pvt->sessionId[sizeof(tech_pvt->sessionId) - 1] = '\0';
+    strncpy(tech_pvt->host, host, sizeof(tech_pvt->host) - 1);
+    tech_pvt->host[sizeof(tech_pvt->host) - 1] = '\0';
     tech_pvt->port = port;
-    strncpy(tech_pvt->path, path, MAX_PATH_LEN);    
+    strncpy(tech_pvt->path, path, sizeof(tech_pvt->path) - 1);
+    tech_pvt->path[sizeof(tech_pvt->path) - 1] = '\0';
     tech_pvt->sampling = desiredSampling;
     tech_pvt->responseHandler = responseHandler;
     tech_pvt->playout = NULL;
@@ -283,7 +289,10 @@ namespace {
     tech_pvt->audio_paused = 0;
     tech_pvt->graceful_shutdown = 0;
     strncpy(tech_pvt->bugname, bugname, MAX_BUG_LEN);
-    if (metadata) strncpy(tech_pvt->initialMetadata, metadata, MAX_METADATA_LEN);
+    if (metadata) {
+      strncpy(tech_pvt->initialMetadata, metadata, sizeof(tech_pvt->initialMetadata) - 1);
+      tech_pvt->initialMetadata[sizeof(tech_pvt->initialMetadata) - 1] = '\0';
+    }
     
     size_t buflen = LWS_PRE + (FRAME_SIZE_8000 * desiredSampling / 8000 * channels * 1000 / RTP_PACKETIZATION_PERIOD * nAudioBufferSecs);
 
@@ -444,12 +453,14 @@ extern "C" {
         switch_log_printf(SWITCH_CHANNEL_CHANNEL_LOG(channel), SWITCH_LOG_NOTICE, "parse_ws_uri - %d: %s\n", i, matches[i].str().c_str());
       }
       */
-      strncpy(host, matches[1].str().c_str(), MAX_WS_URL_LEN);
+      strncpy(host, matches[1].str().c_str(), MAX_WS_URL_LEN - 1);
+      host[MAX_WS_URL_LEN - 1] = '\0';
       if (matches[2].str().length() > 0) {
         *pPort = atoi(matches[2].str().c_str());
       }
       if (matches[3].str().length() > 0) {
-        strncpy(path, matches[3].str().c_str(), MAX_PATH_LEN);
+        strncpy(path, matches[3].str().c_str(), MAX_PATH_LEN - 1);
+        path[MAX_PATH_LEN - 1] = '\0';
       }
       else {
         strcpy(path, "/");
