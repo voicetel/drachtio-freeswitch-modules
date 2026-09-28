@@ -258,7 +258,14 @@ int AudioPipe::lws_callback(struct lws *wsi,
         if (ap->isGracefulShutdown()) {
           lwsl_notice("%s graceful shutdown - sending zero length binary frame to flush any final responses\n", ap->m_uuid.c_str());
           std::lock_guard<std::mutex> lk(ap->m_audio_mutex);
+          /* a 0-length write returns 0 on success, -1 on failure; the failure
+             was previously assigned to 'sent' and ignored, leaving a broken
+             connection in graceful limbo until lws noticed on its own */
           int sent = lws_write(wsi, (unsigned char *) ap->m_audio_buffer + LWS_PRE, 0, LWS_WRITE_BINARY);
+          if (sent < 0) {
+            lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_WRITEABLE %s graceful zero-length write failed\n", ap->m_uuid.c_str());
+            return -1;
+          }
           return 0;
         }
 
