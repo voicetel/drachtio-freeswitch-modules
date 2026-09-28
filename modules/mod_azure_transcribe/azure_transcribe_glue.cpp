@@ -53,6 +53,12 @@ static const char* proxyPort = std::getenv("JAMBONES_HTTP_PROXY_PORT");
 static const char* proxyUsername = std::getenv("JAMBONES_HTTP_PROXY_USERNAME");
 static const char* proxyPassword = std::getenv("JAMBONES_HTTP_PROXY_PASSWORD");
 
+/* live GStreamer count: lets the module shutdown refuse unload while
+   recognizers exist -- the detached reaper threads and the SDK's own
+   callback threads execute module code, which becomes unmapped text the
+   moment the .so is unloaded */
+static std::atomic<int> g_activeStreamers{0};
+
 class GStreamer {
 public:
 	GStreamer(
@@ -78,8 +84,8 @@ public:
 		switch_core_session_t* psession = sessionLock.get();
 		if (!psession) throw std::invalid_argument( "session id no longer active" );
 		switch_channel_t *channel = switch_core_session_get_channel(psession);
- 
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::GStreamer(%p) region %s, language %s\n", 
+
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::GStreamer(%p) region %s, language %s\n",
 			this, region, lang);
 
 
@@ -320,11 +326,17 @@ public:
 		if (interim) m_recognizer->Recognizing += onRecognitionEvent;
 		m_recognizer->Recognized += onRecognitionEvent;
 		m_recognizer->Canceled += onCanceled;
+		/* count only fully-constructed recognizers: the ctor can throw at many
+		   points above and a throwing ctor never runs the dtor, so a
+		   mid-body increment would leak the count and permanently refuse
+		   unload on a transient failed start */
+		g_activeStreamers++;
 		/* sessionLock releases the read lock here, on every path */
 	}
 
 	~GStreamer() {
-		//switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::~GStreamer %p\n", this);		
+		g_activeStreamers--;
+		//switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::~GStreamer %p\n", this);
 	}
 
 	void connect() {
@@ -580,6 +592,10 @@ extern "C" {
 	
 	switch_status_t azure_transcribe_cleanup() {
 		return SWITCH_STATUS_SUCCESS;
+	}
+
+	int azure_transcribe_active_sessions() {
+		return g_activeStreamers.load();
 	}
 
 	void azure_transcribe_session_cleanup(void *pUserData) {

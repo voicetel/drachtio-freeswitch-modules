@@ -242,6 +242,17 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_azure_transcribe_load)
   Macro expands to: switch_status_t mod_azure_transcribe_shutdown() */
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_azure_transcribe_shutdown)
 {
+	int active = azure_transcribe_active_sessions();
+	if (active > 0) {
+		/* Refuse the unload: each active recognizer's SDK callback threads and
+		   the detached reaper threads execute module code, which becomes
+		   unmapped text the moment the .so is unloaded -- a guaranteed crash.
+		   FS keeps the module loaded when shutdown returns FALSE. */
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+			"mod_azure_transcribe: %d transcription session(s) still active; refusing unload -- stop transcriptions (or hang up the calls) first\n",
+			active);
+		return SWITCH_STATUS_FALSE;
+	}
 	azure_transcribe_cleanup();
 	switch_event_free_subclass(TRANSCRIBE_EVENT_RESULTS);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_START_OF_UTTERANCE);
