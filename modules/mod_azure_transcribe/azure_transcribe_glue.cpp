@@ -137,7 +137,12 @@ public:
     if ((var = switch_channel_get_variable(channel, "AZURE_SPEECH_ALTERNATIVE_LANGUAGE_CODES"))) {
 			std::vector<std::string> languages;
 			char *alt_langs[3] = { 0 };
-      int argc = switch_separate_string((char *) var, ',', alt_langs, 3);
+      /* separate on a session-pool copy: switch_separate_string writes NULs
+         over the delimiters IN PLACE, and the direct get_variable result is
+         the channel's stored value -- separating it truncates the variable
+         to its first token for any later reader (e.g. a transcription
+         restart on the same channel) */
+      int argc = switch_separate_string(switch_core_session_strdup(psession, var), ',', alt_langs, 3);
 
 			languages.push_back(lang); // primary language
       for (int i = 0; i < argc; i++) {
@@ -190,7 +195,12 @@ public:
 		if (hints) {
 			auto grammar = PhraseListGrammar::FromRecognizer(m_recognizer);
 			char *phrases[500] = { 0 };
-      int argc = switch_separate_string((char *)hints, ',', phrases, 500);
+      /* same as the alternative-languages case: separate on a session-pool
+         copy -- switch_separate_string writes NULs over the delimiters in
+         the caller's buffer, and separating the channel's stored value in
+         place truncates the variable to its first token for any later
+         reader (e.g. a transcription restart on the same channel) */
+      int argc = switch_separate_string(switch_core_session_strdup(psession, hints), ',', phrases, 500);
       for (int i = 0; i < argc; i++) {
         grammar->AddPhrase(phrases[i]);
       }
