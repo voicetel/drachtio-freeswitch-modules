@@ -886,11 +886,14 @@ extern "C" {
 		  // single atomic load of streamer; reused for both the gate and the cast so
 		  // the pointer cannot change between the null-check and the dereference.
 		  GStreamer* streamer = (GStreamer *) cb->streamer.load();
-		  if (streamer && (!cb->wants_single_utterance || !cb->got_end_of_utterance)) {
-        uint8_t data[SWITCH_RECOMMENDED_BUFFER_SIZE];
+          if (streamer && (!cb->wants_single_utterance || !cb->got_end_of_utterance)) {
+        /* 2x for SMBF_STEREO: media_bug_read's stereo path memcpy's up to
+           2 x decoded_bytes_per_packet but only guards buflen against the
+           mono count (see the azure commit for the full rationale) */
+        uint8_t data[2 * SWITCH_RECOMMENDED_BUFFER_SIZE];
         switch_frame_t frame = {};
         frame.data = data;
-        frame.buflen = SWITCH_RECOMMENDED_BUFFER_SIZE;
+        frame.buflen = 2 * SWITCH_RECOMMENDED_BUFFER_SIZE;
 
         if (switch_mutex_trylock(cb->mutex) == SWITCH_STATUS_SUCCESS) {
           // Re-read streamer UNDER the lock. google_speech_session_cleanup deletes
