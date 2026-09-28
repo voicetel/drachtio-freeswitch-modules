@@ -8,20 +8,22 @@ A Freeswitch module that generates real-time transcriptions on a Freeswitch chan
 The freeswitch module exposes the following API commands:
 
 ```
-aws_transcribe <uuid> start <lang-code> [interim]
+uuid_aws_transcribe <uuid> start <lang-code> [interim] [stereo|mono] [bugname]
 ```
 Attaches media bug to channel and performs streaming recognize request.
 - `uuid` - unique identifier of Freeswitch channel
-- `lang-code` - a valid AWS [language code](https://docs.aws.amazon.com/transcribe/latest/dg/what-is-transcribe.html) that is supported for streaming transcription
+- `lang-code` - a valid AWS [language code](https://docs.aws.amazon.com/transcribe/latest/dg/streaming.html) that is supported for streaming transcription
 - `interim` - If the 'interim' keyword is present then both interim and final transcription results will be returned; otherwise only final transcriptions will be returned
+- `stereo` - If the 'stereo' keyword is present, both caller and callee audio are captured as a two-channel (stereo) stream; otherwise only the caller's audio is captured
+- `bugname` - optional name for the media bug (default: `aws_transcribe`); use the same name with `stop` to stop a specifically-named transcription
 
 ```
-aws_transcribe <uuid> stop
+uuid_aws_transcribe <uuid> stop [bugname]
 ```
 Stop transcription on the channel.
 
 ### Authentication
-The plugin will first look for channel variables, then environment variables.  If neither are found, then the default AWS profile on the server will be used.
+The plugin will first look for channel variables, then environment variables.  If neither are found, the AWS SDK's default credential provider chain is used.
 
 The names of the channel variables and environment variables are:
 
@@ -31,6 +33,22 @@ The names of the channel variables and environment variables are:
 | AWS_SECRET_ACCESS_KEY | The Aws secret access key |
 | AWS_REGION | The Aws region |
 
+### Command Variables
+Additional options can be set through freeswitch channel variables:
+
+| variable | Description |
+| --- | ----------- |
+| START_RECOGNIZING_ON_VAD | if set to 1 or true, do not begin streaming audio to AWS until voice activity is detected |
+| RECOGNIZER_VAD_MODE | An integer value 0-3 from less to more aggressive vad detection (default: 2) |
+| RECOGNIZER_VAD_SILENCE_MS | Milliseconds of silence before the VAD resets (default: 150) |
+| RECOGNIZER_VAD_VOICE_MS | Milliseconds of voice activity required to trigger the connection to AWS when START_RECOGNIZING_ON_VAD is set (default: 250) |
+| RECOGNIZER_VAD_DEBUG | if >0 vad debug logs will be generated (default: 0) |
+| AWS_SHOW_SPEAKER_LABEL | enable speaker diarization |
+| AWS_ENABLE_CHANNEL_IDENTIFICATION | enable channel identification (with stereo capture) |
+| AWS_VOCABULARY_NAME | custom vocabulary to use |
+| AWS_VOCABULARY_FILTER_NAME | vocabulary filter to use |
+| AWS_VOCABULARY_FILTER_METHOD | vocabulary filter method (`mask` or `remove`) |
+| AWS_TRANSCRIBE_MAX_BUFFERED_FRAMES | environment variable (not a channel variable): cap on buffered 20ms frames before drop-oldest kicks in under back-pressure |
 
 ### Events
 `aws_transcribe::transcription` - returns an interim or final transcription.  The event contains a JSON body describing the transcription result:
@@ -45,10 +63,12 @@ The names of the channel variables and environment variables are:
 ]
 ```
 
+All events carry a `transcription-vendor: aws` header; `aws_transcribe::vad_detected` is fired when speech is detected on the VAD path; `jambonz_transcribe::error` is fired on stream errors (the subclass name is inherited and frozen -- external consumers key on it).
+
 ## Usage
 When using [drachtio-fsrmf](https://www.npmjs.com/package/drachtio-fsmrf), you can access this API command via the api method on the 'endpoint' object.
 ```js
-ep.api('aws_transcribe', `${ep.uuid} start en-US interim`);  
+ep.api('uuid_aws_transcribe', `${ep.uuid} start en-US interim`);  
 ```
 
 ## Building
