@@ -109,6 +109,14 @@ int AudioPipe::lws_callback(struct lws *wsi,
           if (ap->m_closePending) {
             ap->close();
           }
+          // a do_graceful_shutdown() issued while still IDLE/CONNECTING only
+          // recorded its intent: the write it queued was dropped by
+          // processPendingWrites' state gate. Complete it now that the pipe is
+          // connected so the flush frame actually goes out (port of deepgram's
+          // finish()-at-ESTABLISHED completion).
+          if (ap->m_gracefulShutdown) {
+            ap->do_graceful_shutdown();
+          }
           ap->m_callback(ap->m_uuid.c_str(), ap->m_bugname.c_str(), AudioPipe::CONNECT_SUCCESS, NULL);
         }
         else {
@@ -700,7 +708,22 @@ void AudioPipe::close() {
 }
 
 void AudioPipe::do_graceful_shutdown() {
-  m_gracefulShutdown = true;
+  if (m_state != LWS_CLIENT_CONNECTED) {
+    // Not connected yet (still IDLE/CONNECTING): the zero-length flush frame
+    // cannot be sent before the handshake completes -- and addPendingWrite
+    // would dereference the null m_vhd of a pipe the service thread has not
+    // adopted yet. Record the intent; LWS_CALLBACK_CLIENT_ESTABLISHED
+    // completes it (same pattern as close()'s m_closePending). Without this,
+    // processPendingWrites' state gate dropped the queued write,
+    // fork_frame stopped pushing audio once the flag was set, and the
+    // connection idled until TCP keepalive.
+    m_gracefulShutdown = true;
+    // the connect may have completed concurrently between the state check
+    // above and setting the flag; ESTABLISHED's own read of m_gracefulShutdown
+    // could already have run (and seen it as still false) in that window
+    // cppcheck-suppress identicalInnerCondition
+    if (m_state != LWS_CLIENT_CONNECTED) return;
+  }
   addPendingWrite(this);
 }
 
