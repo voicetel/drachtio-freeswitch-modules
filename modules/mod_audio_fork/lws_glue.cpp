@@ -542,11 +542,11 @@ extern "C" {
       return SWITCH_STATUS_FALSE;
     }
     private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
+    if (!tech_pvt) return SWITCH_STATUS_FALSE;
     uint32_t id = tech_pvt->id;
 
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) fork_session_cleanup\n", id);
 
-    if (!tech_pvt) return SWITCH_STATUS_FALSE;
     AudioPipe *pAudioPipe = static_cast<AudioPipe *>(tech_pvt->pAudioPipe);
       
     switch_mutex_lock(tech_pvt->mutex);
