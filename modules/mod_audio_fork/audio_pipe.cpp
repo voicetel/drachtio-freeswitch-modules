@@ -414,7 +414,16 @@ AudioPipe* AudioPipe::findAndRemovePendingConnect(struct lws *wsi) {
   for (auto it = pendingConnects.begin(); it != pendingConnects.end() && !ap; ++it) {
     int state = (*it)->m_state;
 
-    if ((*it)->m_wsi == nullptr)
+    /* Purge only sync-failed connects (FAILED with no wsi -- what
+       processPendingConnects leaves in the list after connect_client
+       fails). Sweeping ANY null-wsi entry also removed pipes still IDLE
+       (awaiting adoption by a later processPendingConnects pass): a purged
+       IDLE pipe is never connected nor failed, setClosed() never runs, and
+       its reaper blocks forever in waitForClose() -- an AudioPipe + thread
+       leak per hit. CONNECTING-with-null-wsi must also be left alone: that
+       is a pipe mid-connect_client (which runs outside this mutex), and
+       removing it here would orphan it from ESTABLISHED's lookup. */
+    if ((*it)->m_wsi == nullptr && state == LWS_CLIENT_FAILED)
       toRemove.push_back(*it);
 
     if ((state == LWS_CLIENT_CONNECTING) &&

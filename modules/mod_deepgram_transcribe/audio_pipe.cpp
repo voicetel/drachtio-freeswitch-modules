@@ -392,7 +392,10 @@ AudioPipe* AudioPipe::findAndRemovePendingConnect(struct lws *wsi) {
   for (auto it = pendingConnects.begin(); it != pendingConnects.end() && !ap; ++it) {
     int state = (*it)->m_state;
 
-    if ((*it)->m_wsi == nullptr)
+    /* purge only sync-failed connects, never IDLE pipes awaiting adoption
+       or CONNECTING ones mid-connect_client; see the audio_fork copy for
+       the full rationale (null-wsi sweep orphaned reapers forever) */
+    if ((*it)->m_wsi == nullptr && state == LWS_CLIENT_FAILED)
       toRemove.push_back(*it);
 
     if ((state == LWS_CLIENT_CONNECTING) &&
