@@ -19,6 +19,7 @@
 
 static std::atomic<long> g_events{0};
 static std::atomic<long> g_pipes{0};
+static std::atomic<long> g_completed{0};
 
 static void logger(int level, const char* line) {
   // keep noise down; surface only lws errors
@@ -56,7 +57,7 @@ static void mediaThread(AudioPipe* ap, std::atomic<bool>* stop) {
 // detached thread closes, waits for the socket-closed promise, then deletes).
 static void reap(AudioPipe* ap) {
   std::shared_ptr<AudioPipe> sp(ap);
-  std::thread([sp]{ sp->close(); sp->waitForClose(); }).detach();
+  std::thread([sp]{ sp->close(); sp->waitForClose(); g_completed.fetch_add(1, std::memory_order_relaxed); }).detach();
 }
 
 static void oneIteration(int i) {
@@ -110,11 +111,23 @@ int main(int argc, char** argv) {
   }
   for (auto& t : ws) t.join();
 
-  // let detached reapers drain (waitForClose returns on CLOSED/CONNECT_FAIL)
-  std::this_thread::sleep_for(std::chrono::seconds(3));
+  /* Reaper-completion gate (ported from soak_deepgram): a fixed sleep cannot
+     distinguish "all reapers finished" from "some are stuck in waitForClose()
+     forever" -- a pipe-close-vs-handshake regression (6077c8e class) leaves
+     the detached reaper holding the shared_ptr, so even LSan stays silent and
+     the soak would report success. Wait (bounded) until every iteration's
+     reaper has completed, and FAIL otherwise. */
+  for (int i = 0; i < 30 && g_completed.load() < iters; i++)
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+
+  long completed = g_completed.load();
+  bool ok = completed >= iters;
+  if (!ok) {
+    fprintf(stderr, "REAPER FAIL: %ld/%d reapers completed (waitForClose leak)\n", completed, iters);
+  }
   AudioPipe::deinitialize();
 
-  fprintf(stderr, "SOAK DONE: pipes=%ld events=%ld iters=%d workers=%d\n",
-          g_pipes.load(), g_events.load(), iters, workers);
-  return 0;
+  fprintf(stderr, "SOAK DONE: pipes=%ld events=%ld iters=%d workers=%d completed=%ld\n",
+          g_pipes.load(), g_events.load(), iters, workers, completed);
+  return ok ? 0 : 1;
 }
