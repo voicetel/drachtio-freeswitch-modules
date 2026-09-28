@@ -886,7 +886,7 @@ extern "C" {
 		  // single atomic load of streamer; reused for both the gate and the cast so
 		  // the pointer cannot change between the null-check and the dereference.
 		  GStreamer* streamer = (GStreamer *) cb->streamer.load();
-          if (streamer && (!cb->wants_single_utterance || !cb->got_end_of_utterance)) {
+		  if (streamer && (!cb->wants_single_utterance || !cb->got_end_of_utterance)) {
         /* SMBF_STEREO: media_bug_read writes 2x the buflen it guards against;
            MEDIA_BUG_FRAME_BUF_SIZE is the exact worst case (rationale in
            mod_azure_transcribe.h) */
