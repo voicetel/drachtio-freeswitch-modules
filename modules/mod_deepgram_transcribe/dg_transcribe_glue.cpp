@@ -645,12 +645,22 @@ extern "C" {
       size_t available = pAudioPipe->binarySpaceAvailable();
       if (NULL == tech_pvt->resampler) {
         switch_frame_t frame = { 0 };
+        /* media_bug_read guards buflen against the MONO byte count
+           (decoded_bytes_per_packet) but its SMBF_STEREO path then writes 2x
+           that into frame->data (memcpy(frame->data, bug->tmp, bytes * 2)).
+           Reading straight into the ring with available in [bytes, 2*bytes)
+           therefore overflowed m_audio_buffer -- reachable for stereo at the
+           native 8kHz rate (no resampler) when 2*bytes does not divide the
+           ring size (e.g. ptime=30: 64000 % 960 == 640). Scale the minimum
+           free space by the channel count. Same fix as the audio_fork
+           lineage copy. */
+        const size_t minSpace = pAudioPipe->binaryMinSpace() * tech_pvt->channels;
         frame.data = pAudioPipe->binaryWritePtr();
         frame.buflen = available;
         while (true) {
 
           // check if buffer would be overwritten; dump packets if so
-          if (available < pAudioPipe->binaryMinSpace()) {
+          if (available < minSpace) {
             if (!tech_pvt->buffer_overrun_notified) {
               tech_pvt->buffer_overrun_notified = 1;
               tech_pvt->responseHandler(session, TRANSCRIBE_EVENT_BUFFER_OVERRUN, NULL, tech_pvt->bugname, 0);
