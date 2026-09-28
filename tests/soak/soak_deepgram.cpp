@@ -1,13 +1,20 @@
 // Concurrency soak of the REAL mod_deepgram_transcribe AudioPipe under
-// ASan/TSan. Deepgram's pipe always dials TLS (LCCSCF_USE_SSL), so against a
-// plain-ws mock or a refused port every connect terminates via
-// LWS_CALLBACK_CLIENT_CONNECTION_ERROR -> CONNECT_FAIL -> setClosed(). That
-// still concurrently exercises: addPendingConnect (round-robin + NULL-context
-// guard), findAndRemovePendingConnect, finish() pre-handshake
-// (m_gracefulShutdown path), the reaper promise, ~AudioPipe()
-// removeFromPending, and deinitialize() -- the teardown surfaces changed in
-// this release. The RECEIVE-path changes are exercised by the identical
-// mod_ttsd_transcribe soak (ws, no TLS) in that repo.
+// ASan/TSan. Deepgram's pipe always dials TLS (LCCSCF_USE_SSL), so run.sh
+// serves the mock over wss with a throwaway self-signed cert (trusted by the
+// client through SSL_CERT_FILE only -- the pipe sets no CA path and no
+// skip-verify flag). The handshakes therefore COMPLETE and this exercises the
+// connected surface directly:
+//   CLIENT_ESTABLISHED (incl. the m_gracefulShutdown record-and-complete),
+//   the media-thread ring-buffer writes, the inbound receive path (fragment
+//   reassembly + the >650KB MAX_RECV_BUF_SIZE discard, driven by the mock's
+//   WS_OVERSIZED_EVERY), CloseStream teardown as driven by the production
+//   reaper (finish() + waitForClose(), no close() of its own -- it relies on
+//   the remote close), far-end drop, connect-fail, and the destructor /
+//   removeFromPending and deinitialize() paths.
+//
+// g_connects is asserted at the end: if the TLS setup ever regresses to
+// CONNECT_FAIL-only, the soak FAILS rather than silently reverting to the
+// pre-v0.7.1 state where every "pass" proved nothing about the connected path.
 #include "audio_pipe.hpp"
 #include <atomic>
 #include <chrono>
@@ -23,21 +30,38 @@ using namespace deepgram;
 static std::atomic<long> g_events{0};
 static std::atomic<long> g_pipes{0};
 static std::atomic<long> g_completed{0};
+static std::atomic<long> g_connects{0};
+static std::atomic<long> g_drops{0};
+static std::atomic<long> g_graceful{0};
+static std::atomic<long> g_fail{0};
 
 static void logger(int level, const char* line) {
   if (level == LLL_ERR) fprintf(stderr, "[lws] %s", line);
 }
 static void onNotify(const char*, AudioPipe::NotifyEvent_t event, const char* message, bool) {
   g_events.fetch_add(1, std::memory_order_relaxed);
-  if (event == AudioPipe::CONNECT_FAIL && message) {
-    // touch the message (ASan checks the buffer) -- may legitimately be NULL
-    volatile size_t n = strlen(message);
-    (void) n;
+  switch (event) {
+    case AudioPipe::CONNECT_SUCCESS:
+      g_connects.fetch_add(1, std::memory_order_relaxed);
+      break;
+    case AudioPipe::CONNECTION_DROPPED:
+      g_drops.fetch_add(1, std::memory_order_relaxed);
+      break;
+    case AudioPipe::CONNECTION_CLOSED_GRACEFULLY:
+      g_graceful.fetch_add(1, std::memory_order_relaxed);
+      break;
+    case AudioPipe::CONNECT_FAIL:
+      g_fail.fetch_add(1, std::memory_order_relaxed);
+      if (message) { volatile size_t n = strlen(message); (void) n; }  // ASan checks the buffer
+      break;
+    default:
+      break;
   }
 }
 
 static const char* HOST = "127.0.0.1";
-static int PORT = 9000;       // plain-ws mock: TLS handshake fails -> CONNECT_FAIL
+static int PORT = 9000;       // wss mock
+static int DROP_PORT = 9001;  // wss mock that drops mid-stream
 static int BAD_PORT = 1;      // connection refused -> CONNECT_FAIL
 static const char* PATH = "/v1/listen";
 
@@ -59,7 +83,8 @@ static void mediaThread(AudioPipe* ap, std::atomic<bool>* stop) {
   }
 }
 
-// identical ownership pattern to the glue's reaper()
+// identical ownership pattern to the glue's reaper(): finish then wait for the
+// remote close, never close()
 static void reap(AudioPipe* ap) {
   std::shared_ptr<AudioPipe> sp(ap);
   std::thread([sp]{
@@ -70,7 +95,10 @@ static void reap(AudioPipe* ap) {
 }
 
 static void oneIteration(int i) {
-  int port = (i % 3 == 2) ? BAD_PORT : PORT;
+  int port = PORT;
+  if (i % 5 == 2) port = DROP_PORT;   // far-end drop mid-stream
+  if (i % 5 == 4) port = BAD_PORT;    // connect-fail
+
   size_t buflen = LWS_PRE + 320 * 40;
   AudioPipe* ap = new AudioPipe("soak-sess", HOST, (unsigned int)port, PATH,
                                 buflen, 640, "fake-api-key", onNotify);
@@ -79,11 +107,16 @@ static void oneIteration(int i) {
 
   std::atomic<bool> stop{false};
   std::thread mt(mediaThread, ap, &stop);
+  // 3 of 4 iterations stream for a bit; the 4th reaps IMMEDIATELY after
+  // connect(), racing finish() against the (now succeeding) TLS handshake --
+  // the pre-handshake finish / m_gracefulShutdown record-and-complete path
   if (i % 4 != 3) {
-    // 3 of 4 iterations wait a bit; the 4th reaps IMMEDIATELY after connect(),
-    // racing finish() against the (failing) handshake -- the pre-handshake
-    // finish/m_gracefulShutdown path plus CONNECT_FAIL's own setClosed()
-    std::this_thread::sleep_for(std::chrono::milliseconds(5 + (i % 25)));
+    if (i % 5 == 3) std::this_thread::sleep_for(std::chrono::milliseconds(60 + (i % 40)));
+    else            std::this_thread::sleep_for(std::chrono::milliseconds(5 + (i % 25)));
+  }
+  if (i % 5 == 3) {
+    // a text send queued concurrently with teardown: pending-writes vs reaper
+    ap->bufferForSending("{\"type\":\"KeepAlive\"}");
   }
   if (i % 4 == 0) ap->finish();  // some explicit early finishes
   stop.store(true, std::memory_order_relaxed);
@@ -94,7 +127,8 @@ static void oneIteration(int i) {
 int main() {
   int iters   = getenv("ITER")    ? atoi(getenv("ITER"))    : 200;
   int workers = getenv("WORKERS") ? atoi(getenv("WORKERS")) : 4;
-  if (getenv("WS_PORT")) PORT = atoi(getenv("WS_PORT"));
+  if (getenv("WS_PORT"))      PORT      = atoi(getenv("WS_PORT"));
+  if (getenv("WS_DROP_PORT")) DROP_PORT = atoi(getenv("WS_DROP_PORT"));
 
   /* 2 requested: initialize() caps >1 to 1 at runtime (multi-context connect
      adoption is not thread-safe), so what actually runs is the CAP path with
@@ -115,14 +149,27 @@ int main() {
   }
   for (auto& t : ws) t.join();
 
-  // let detached reapers drain (CONNECT_FAIL fulfills the close promise)
+  // let detached reapers drain (the remote close after CloseStream, or
+  // CONNECTION_DROPPED / CONNECT_FAIL, fulfills the close promise)
   for (int i = 0; i < 30 && g_completed.load() < iters; i++)
     std::this_thread::sleep_for(std::chrono::seconds(1));
 
   long completed = g_completed.load();
-  bool ok = completed >= iters;
-  fprintf(stderr, "%s: %ld/%d reapers completed (pipes=%ld events=%ld)\n",
-          ok ? "REAPER PASS" : "REAPER FAIL (waitForClose leak)", completed, iters, g_pipes.load(), g_events.load());
+  long connects  = g_connects.load();
+  /* ~4/5 of iterations dial a live mock; requiring a solid majority of those
+     to reach CONNECT_SUCCESS is what proves the connected path was covered at
+     all. Without this the harness cannot tell a real soak from the old
+     TLS-fails-everything one. */
+  long need = iters / 5;
+  bool ok = completed >= iters && connects >= need;
+  fprintf(stderr,
+          "%s: %ld/%d reapers completed, %ld CONNECT_SUCCESS (>= %ld required), "
+          "%ld dropped, %ld graceful, %ld failed, pipes=%ld events=%ld\n",
+          ok ? "REAPER PASS" : "REAPER FAIL",
+          completed, iters, connects, need,
+          g_drops.load(), g_graceful.load(), g_fail.load(), g_pipes.load(), g_events.load());
+  if (completed < iters) fprintf(stderr, "  -> waitForClose leak: %d reapers never returned\n", iters - (int)completed);
+  if (connects < need)   fprintf(stderr, "  -> TLS handshakes not completing: connected path NOT covered\n");
 
   AudioPipe::deinitialize();
   fprintf(stderr, "SOAK DONE\n");

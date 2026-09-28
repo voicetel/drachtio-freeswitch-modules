@@ -174,10 +174,10 @@ grep -oE 'switch_[a-z_]+' modules/<mod>/<file>.cpp | sort -u   # empty -> harnes
 The harness (`tests/soak/`) builds the **real** module source twice — once with
 `-fsanitize=address,undefined` and once with `-fsanitize=thread` — for BOTH
 lws AudioPipes (`mod_audio_fork` and, since v0.6.0, `mod_deepgram_transcribe`;
-deepgram dials TLS-only, so its soak covers the connect-fail/teardown/reaper
-surfaces plus a 200/200 reaper-completion gate, while its receive path is
-byte-identical to the mod_ttsd_transcribe AudioPipe soaked end-to-end in that
-repo) — and drives, concurrently in a loop:
+deepgram dials TLS-only, so `run.sh` serves the mock over `wss` with a
+throwaway self-signed cert and the handshakes complete — the connected path,
+the receive path and `CloseStream` teardown are covered directly, not
+inherited from another repo's harness) — and drives, concurrently in a loop:
 - the real lws service thread (started by `AudioPipe::initialize`),
 - a "media thread" that writes audio into the ring buffer exactly like the media-bug
   callback does,
@@ -203,9 +203,20 @@ docker run --rm --security-opt seccomp=unconfined audiopipe-soak     # OVERALL: 
   *asynchronously*; in FreeSWITCH the first `connect()` is seconds later, so the
   harness must `sleep` after `initialize()` before connecting (otherwise
   `connect()` dereferences a NULL `contexts[]` — a harness bug, not a module bug).
-- **WebSocket subprotocol** — the libwebsockets client offers a subprotocol
-  (`audio.drachtio.org`); the mock server (python `websockets`) must negotiate it:
-  `serve(..., subprotocols=["audio.drachtio.org"])`, or the handshake fails.
+- **WebSocket subprotocol — do NOT pin a fixed list on the mock.** The
+  libwebsockets clients differ: `mod_audio_fork` offers `audio.drachtio.org`, but
+  the deepgram pipe offers **nothing** (`i.protocol` is commented out in its
+  `connect_client`). `websockets`' default `select_subprotocol` *raises*
+  `NegotiationError` ("missing subprotocol", answered as HTTP 400) when the server
+  is configured with a list and the client offers none — so the deepgram soak
+  silently degraded to connect-fail-only while still reporting 200/200 and
+  passing. Use a `select_subprotocol` callable that returns `offered[0] or None`.
+  The real service keys off query params and requires no subprotocol.
+- **A receive-path assertion is worth less than a coverage assertion.** The soak
+  now fails if too few iterations reach `CONNECT_SUCCESS`, because "no sanitizer
+  errors" is indistinguishable from "the interesting code never ran". Apply the
+  same test to any new scenario: prove the path executed (a counter, or a grep for the module's
+  own log markers) before believing the green.
 - **Classify every sanitizer finding** as a real module bug vs a harness/shutdown
   artifact before acting. This soak's TSan run found a genuine race — but only in
   the module-unload `deinitialize()` path (detached threads + an unlocked

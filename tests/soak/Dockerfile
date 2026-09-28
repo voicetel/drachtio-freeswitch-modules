@@ -10,7 +10,7 @@
 FROM debian:trixie
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    g++ libwebsockets-dev pkg-config ca-certificates util-linux \
+    g++ libwebsockets-dev pkg-config ca-certificates util-linux openssl \
     python3 python3-websockets && rm -rf /var/lib/apt/lists/*
 WORKDIR /opt/soak
 # the REAL module source (build context = repo root)
