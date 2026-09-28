@@ -196,26 +196,35 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_azure_transcribe_load)
 {
 	switch_api_interface_t *api_interface;
 
-	/* create/register custom event message type */
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_RESULTS) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_RESULTS);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_START_OF_UTTERANCE) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_START_OF_UTTERANCE);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_END_OF_UTTERANCE) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_END_OF_UTTERANCE);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_NO_SPEECH_DETECTED) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_NO_SPEECH_DETECTED);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_VAD_DETECTED) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_VAD_DETECTED);
-		return SWITCH_STATUS_TERM;
+	/* create/register custom event message types.
+	   NB: the ERROR subclass NAME (inherited jambonz_transcribe::error) is frozen --
+	   external consumers key on it. */
+	{
+		static const char* subclasses[] = {
+			TRANSCRIBE_EVENT_RESULTS,
+			TRANSCRIBE_EVENT_START_OF_UTTERANCE,
+			TRANSCRIBE_EVENT_END_OF_UTTERANCE,
+			TRANSCRIBE_EVENT_NO_SPEECH_DETECTED,
+			TRANSCRIBE_EVENT_VAD_DETECTED,
+			/* the glue fires the error subclass (notifyWriteFailure, onCanceled,
+			   unexpected SessionStopped) but it was never reserved -- aws was
+			   fixed for exactly this (b8be43a) and azure was not */
+			TRANSCRIBE_EVENT_ERROR
+		};
+		size_t i;
+		for (i = 0; i < sizeof(subclasses) / sizeof(subclasses[0]); i++) {
+			if (switch_event_reserve_subclass(subclasses[i]) != SWITCH_STATUS_SUCCESS) {
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", subclasses[i]);
+				/* FreeSWITCH does not call the shutdown hook for a failed load:
+				   anything already reserved stays reserved for the life of the
+				   process, and every subsequent load fails at this same spot
+				   until FS restarts. Release what we took. */
+				while (i-- > 0) {
+					switch_event_free_subclass(subclasses[i]);
+				}
+				return SWITCH_STATUS_TERM;
+			}
+		}
 	}
 
 	/* connect my internal structure to the blank pointer passed to me */
@@ -259,5 +268,6 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_azure_transcribe_shutdown)
 	switch_event_free_subclass(TRANSCRIBE_EVENT_END_OF_UTTERANCE);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_NO_SPEECH_DETECTED);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_VAD_DETECTED);
+	switch_event_free_subclass(TRANSCRIBE_EVENT_ERROR);
 	return SWITCH_STATUS_SUCCESS;
 }
