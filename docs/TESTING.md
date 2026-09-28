@@ -215,8 +215,19 @@ docker run --rm --security-opt seccomp=unconfined audiopipe-soak     # OVERALL: 
 - **A receive-path assertion is worth less than a coverage assertion.** The soak
   now fails if too few iterations reach `CONNECT_SUCCESS`, because "no sanitizer
   errors" is indistinguishable from "the interesting code never ran". Apply the
-  same test to any new scenario: prove the path executed (a counter, or a grep for the module's
-  own log markers) before believing the green.
+  same test to any new scenario: prove the path executed (counter, or `SOAK_LLL=7`
+  plus a grep for the module's own log markers) before believing the green.
+- **`MAX_RECV_BUF_SIZE` (650KB) is only checked in the realloc branch.** A
+  single-frame oversized message is allocated whole on its first fragment
+  (`len + lws_remaining_packet_payload`) and never reallocs, so it cannot reach
+  the discard path — the oversized probe must be sent as ~200 fragments (8KB
+  realloc steps ⇒ ~82 to cross 650KB), early in the connection, with the
+  connection held open ~250ms. All three conditions matter; the mock previously
+  satisfied none of them and the path had never run.
+- **The two pipe lineages log the recv markers at different severities**
+  (`mod_audio_fork` `lwsl_notice`, deepgram `lwsl_err`). The harness logger
+  filters `LLL_ERR` by default, so audio_fork's recv path looks unexercised even
+  when it is. Set `SOAK_LLL=7` (`LLL_ERR|LLL_WARN|LLL_NOTICE`) to verify.
 - **Classify every sanitizer finding** as a real module bug vs a harness/shutdown
   artifact before acting. This soak's TSan run found a genuine race — but only in
   the module-unload `deinitialize()` path (detached threads + an unlocked

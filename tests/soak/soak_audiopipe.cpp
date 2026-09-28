@@ -20,10 +20,15 @@
 static std::atomic<long> g_events{0};
 static std::atomic<long> g_pipes{0};
 static std::atomic<long> g_completed{0};
+static int g_lmask = LLL_ERR;
 
 static void logger(int level, const char* line) {
-  // keep noise down; surface only lws errors
-  if (level == LLL_ERR) fprintf(stderr, "[lws] %s", line);
+  // keep noise down; surface only lws errors unless SOAK_LLL widens the mask.
+  // Needed because the two AudioPipe lineages log the inbound recv-path
+  // markers at different severities (audio_pipe: lwsl_notice, deepgram:
+  // lwsl_err), so a fixed LLL_ERR filter cannot confirm the reassembly /
+  // oversized-discard paths ran at all.
+  if (level & g_lmask) fprintf(stderr, "[lws] %s", line);
 }
 static void onNotify(const char*, const char*, AudioPipe::NotifyEvent_t, const char*) {
   g_events.fetch_add(1, std::memory_order_relaxed);
@@ -74,7 +79,12 @@ static void oneIteration(int i) {
 
   std::atomic<bool> stop{false};
   std::thread mt(mediaThread, ap, &stop);
-  std::this_thread::sleep_for(std::chrono::milliseconds(20 + (i % 30)));
+  /* i % 5 == 1 holds the connection open long enough for the mock's 700KB
+     oversized message to actually land: the discard path only trips after
+     ~82 consecutive 8KB reallocs in ONE pipe, which a 20-50ms connection
+     never reaches. Without this the >650KB branch is never exercised. */
+  int hold = (i % 5 == 1) ? 250 : (20 + (i % 30));
+  std::this_thread::sleep_for(std::chrono::milliseconds(hold));
 
   switch (i % 5) {
     case 0: ap->do_graceful_shutdown(); break;          // graceful (zero-len frame)
@@ -92,8 +102,9 @@ int main(int argc, char** argv) {
   int workers = getenv("WORKERS") ? atoi(getenv("WORKERS")) : 4;
   if (getenv("WS_PORT"))      PORT      = atoi(getenv("WS_PORT"));
   if (getenv("WS_DROP_PORT")) DROP_PORT = atoi(getenv("WS_DROP_PORT"));
+  if (getenv("SOAK_LLL"))     g_lmask   = atoi(getenv("SOAK_LLL"));
 
-  AudioPipe::initialize("audio.drachtio.org", 1 /*service threads*/, LLL_ERR, logger);
+  AudioPipe::initialize("audio.drachtio.org", 1 /*service threads*/, g_lmask, logger);
   // wait for the service thread to create the lws context before any connect
   // (in FreeSWITCH, initialize runs at module load, long before the first call)
   std::this_thread::sleep_for(std::chrono::seconds(2));

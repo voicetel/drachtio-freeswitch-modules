@@ -20,7 +20,10 @@ DROP_AFTER = float(os.environ.get("WS_DROP_AFTER", "0"))  # 0 = never drop
 # one (0 = disabled). Exercises the module's inbound paths that plain small
 # messages never reach: fragment reassembly, the >650KB MAX_RECV_BUF_SIZE
 # discard path, and its truncated-tail handling (regression coverage for
-# the c31364f class).
+# the c31364f class). Also fired on the FIRST frame (n == 1): soak
+# connections live only tens of milliseconds, and the discard path needs
+# ~82 consecutive 8KB reallocs to trip, so a purely periodic trigger never
+# let a 700KB message finish before teardown.
 OVERSIZED_EVERY = int(os.environ.get("WS_OVERSIZED_EVERY", "0"))
 TLS_CERT = os.environ.get("WS_TLS_CERT", "")
 TLS_KEY = os.environ.get("WS_TLS_KEY", "")
@@ -74,7 +77,7 @@ async def handler(*args):
                     await ws.send('{"type":"transcription","data":{"is_final":false,"text":"soak"}}')
                 except Exception:
                     break
-            if OVERSIZED_EVERY > 0 and n % OVERSIZED_EVERY == 0:
+            if OVERSIZED_EVERY > 0 and (n == 1 or n % OVERSIZED_EVERY == 0):
                 # 1) a deliberately fragmented valid message: sending an iterable
                 #    makes the library emit continuation frames, exercising the
                 #    recv-buffer reassembly path
@@ -88,6 +91,18 @@ async def handler(*args):
                 #    which allocates len + lws_remaining_packet_payload up front
                 try:
                     await ws.send('{"type":"transcription","data":"' + 'x' * (700 * 1024) + '"}')
+                except Exception:
+                    pass
+                # 3) an oversized message AS FRAGMENTS: >650KB spread over many
+                #    continuation frames. This is the only shape that can reach
+                #    the MAX_RECV_BUF_SIZE discard + truncated-tail path: the
+                #    check lives in the realloc branch, and a single-frame
+                #    message is allocated whole on its first fragment, so it
+                #    never reallocs. Each 8KB realloc step needs ~82 frames to
+                #    cross 650KB, hence 200 x 4KB.
+                try:
+                    await ws.send(['{"type":"transcription","data":"' + 'x' * 4000
+                                   for _ in range(200)] + ['"]}'])
                 except Exception:
                     pass
     except Exception:

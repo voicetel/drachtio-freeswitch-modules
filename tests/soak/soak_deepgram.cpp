@@ -34,9 +34,12 @@ static std::atomic<long> g_connects{0};
 static std::atomic<long> g_drops{0};
 static std::atomic<long> g_graceful{0};
 static std::atomic<long> g_fail{0};
+static int g_lmask = LLL_ERR;
 
 static void logger(int level, const char* line) {
-  if (level == LLL_ERR) fprintf(stderr, "[lws] %s", line);
+  // see soak_audiopipe.cpp: SOAK_LLL widens this mask so the inbound recv-path
+  // markers can be confirmed for both pipe lineages
+  if (level & g_lmask) fprintf(stderr, "[lws] %s", line);
 }
 static void onNotify(const char*, AudioPipe::NotifyEvent_t event, const char* message, bool) {
   g_events.fetch_add(1, std::memory_order_relaxed);
@@ -111,8 +114,11 @@ static void oneIteration(int i) {
   // connect(), racing finish() against the (now succeeding) TLS handshake --
   // the pre-handshake finish / m_gracefulShutdown record-and-complete path
   if (i % 4 != 3) {
-    if (i % 5 == 3) std::this_thread::sleep_for(std::chrono::milliseconds(60 + (i % 40)));
-    else            std::this_thread::sleep_for(std::chrono::milliseconds(5 + (i % 25)));
+    /* i % 5 == 1 holds long enough for the mock's 700KB oversized message to
+       land (the >650KB discard path needs ~82 consecutive 8KB reallocs in one
+       pipe); i % 5 == 3 streams a while before the text-send teardown */
+    int hold = (i % 5 == 1) ? 250 : ((i % 5 == 3) ? (60 + (int)(i % 40)) : (5 + (int)(i % 25)));
+    std::this_thread::sleep_for(std::chrono::milliseconds(hold));
   }
   if (i % 5 == 3) {
     // a text send queued concurrently with teardown: pending-writes vs reaper
@@ -129,11 +135,12 @@ int main() {
   int workers = getenv("WORKERS") ? atoi(getenv("WORKERS")) : 4;
   if (getenv("WS_PORT"))      PORT      = atoi(getenv("WS_PORT"));
   if (getenv("WS_DROP_PORT")) DROP_PORT = atoi(getenv("WS_DROP_PORT"));
+  if (getenv("SOAK_LLL"))     g_lmask   = atoi(getenv("SOAK_LLL"));
 
   /* 2 requested: initialize() caps >1 to 1 at runtime (multi-context connect
      adoption is not thread-safe), so what actually runs is the CAP path with
      a single context -- cross-context discrimination does not execute here */
-  AudioPipe::initialize(2 /*requested service threads: exercises the cap*/, LLL_ERR, logger);
+  AudioPipe::initialize(2 /*requested service threads: exercises the cap*/, g_lmask, logger);
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
   std::vector<std::thread> ws;

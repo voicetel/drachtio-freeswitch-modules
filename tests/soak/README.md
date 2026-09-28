@@ -65,12 +65,32 @@ means ASan and TSan were both clean.
 graceful stop (zero-length flush frame, audio_fork) · plain close via reaper ·
 far-end drop (mock server closes mid-stream) · text send + immediate
 teardown · connect-fail (dead port). `i % 5 == 1` holds the connection open
-No iteration
+~250ms instead of ~20-60ms — see the oversized note below. No iteration
 restarts a pipe — "rapid restart" coverage comes from the 200×4 rapid
 connect/teardown cadence itself. Both variants gate on 100% reaper
 completion (a `waitForClose` hang fails the run), and the deepgram variant
 additionally gates on `CONNECT_SUCCESS`.
 
-The mock server pushes occasional inbound JSON, plus — when
-`WS_OVERSIZED_EVERY` is active (run.sh default) — deliberately fragmented and
->650KB oversized messages for the recv reassembly and discard paths.
+The mock server pushes occasional inbound JSON — plus, when
+`WS_OVERSIZED_EVERY` is active (run.sh default), a deliberately fragmented
+message, a >650KB single-frame message, and a >650KB **fragmented** message.
+
+Two things that are easy to get wrong here, both of which left the receive
+path untested for a release:
+
+- **The oversized message must be fragmented.** `MAX_RECV_BUF_SIZE` (650KB) is
+  only checked in the realloc branch of the receive path; a single-frame
+  message is allocated whole on its first fragment
+  (`len + lws_remaining_packet_payload`) and never reallocs. Growing in 8KB
+  steps also needs ~82 continuation frames to cross 650KB, which is why the
+  mock sends 200×4KB.
+- **It must be sent early and the connection held.** The mock's frame counter
+  is per-connection and soak connections normally live only tens of
+  milliseconds, so a purely periodic trigger never let a message finish before
+  teardown. Hence the `n == 1` send and the `i % 5 == 1` long hold.
+
+To confirm these paths actually ran (rather than assuming it), set
+`SOAK_LLL=7` (`LLL_ERR|LLL_WARN|LLL_NOTICE`) and grep the output: the two
+pipe lineages log the recv markers at *different* severities — `mod_audio_fork`
+at `lwsl_notice`, `mod_deepgram_transcribe` at `lwsl_err` — so a fixed
+`LLL_ERR` filter silently shows nothing for the former.
