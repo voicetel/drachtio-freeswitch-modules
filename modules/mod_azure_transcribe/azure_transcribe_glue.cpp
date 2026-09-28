@@ -677,7 +677,11 @@ extern "C" {
 
 		// allocate vad if we are delaying connecting to the recognizer until we detect speech
 		if (switch_channel_var_true(channel, "START_RECOGNIZING_ON_VAD")) {
-			cb->vad = switch_vad_init(sampleRate, 1);
+			/* channels, not hardcoded 1: on a stereo capture the frame callback
+			   feeds the VAD interleaved 2-channel frames with a per-channel
+			   sample count -- a mono VAD inspects only half of each frame's
+			   bytes (degraded detection, reading before the frame end) */
+			cb->vad = switch_vad_init(sampleRate, cb->channels);
 			if (cb->vad) {
 				const char* var;
 				int mode = 2;
