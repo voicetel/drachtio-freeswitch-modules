@@ -403,9 +403,17 @@ public:
 					}
 					if (jsonString) free(jsonString);
 					cJSON_Delete(root);
-					TranscriptEvent empty;
-					m_transcript = empty;
 				}
+				/* Clear unconditionally, session or not: leaving a set transcript
+				   when the session is gone kept TranscriptHasBeenSet() true, so the
+				   wait predicate held forever -- the worker spun at 100% CPU and,
+				   worse, m_cond.wait_for returned immediately on every iteration,
+				   meaning the 10s overdue timeout never fired and the
+				   DisableRequestProcessing() bounded shutdown failed open exactly
+				   on the dead-network calls it exists for. With the session gone
+				   there is no consumer for the transcript; drop it. */
+				TranscriptEvent empty;
+				m_transcript = empty;
 			}
 			if (m_finishing) {
 				shutdownInitiated = true;
