@@ -640,10 +640,22 @@ extern "C" {
       return SWITCH_STATUS_FALSE;
     }
     private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
-  
+
     if (!tech_pvt) return SWITCH_STATUS_FALSE;
+
+    /* fork_session_cleanup hands the pipe to the reaper (which deletes it)
+       under tech_pvt->mutex; using the pipe here without that lock raced the
+       delete. Take the lock and re-verify the private still names this bug --
+       cleanup clears the private under the same mutex before the bug is
+       removed, so a verified private means the pipe is still alive. */
+    switch_mutex_lock(tech_pvt->mutex);
+    if (switch_channel_get_private(channel, bugname) != bug) {
+      switch_mutex_unlock(tech_pvt->mutex);
+      return SWITCH_STATUS_FALSE;
+    }
     AudioPipe *pAudioPipe = static_cast<AudioPipe *>(tech_pvt->pAudioPipe);
     if (pAudioPipe && text) pAudioPipe->bufferForSending(text);
+    switch_mutex_unlock(tech_pvt->mutex);
 
     return SWITCH_STATUS_SUCCESS;
   }
@@ -656,11 +668,21 @@ extern "C" {
       return SWITCH_STATUS_FALSE;
     }
     private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
-  
+
     if (!tech_pvt) return SWITCH_STATUS_FALSE;
 
+    /* serialize against fork_session_cleanup: flushing a bug that a racing
+       stop has already removed/closed is a use-after-free. Cleanup clears
+       the private under this mutex before removing the bug, so a verified
+       private means the bug is still attached. */
+    switch_mutex_lock(tech_pvt->mutex);
+    if (switch_channel_get_private(channel, bugname) != bug) {
+      switch_mutex_unlock(tech_pvt->mutex);
+      return SWITCH_STATUS_FALSE;
+    }
     switch_core_media_bug_flush(bug);
     tech_pvt->audio_paused = pause;
+    switch_mutex_unlock(tech_pvt->mutex);
     return SWITCH_STATUS_SUCCESS;
   }
 
@@ -672,13 +694,22 @@ extern "C" {
       return SWITCH_STATUS_FALSE;
     }
     private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
-  
+
     if (!tech_pvt) return SWITCH_STATUS_FALSE;
+
+    /* same teardown race as fork_session_send_text: the reaper deletes the
+       pipe under tech_pvt->mutex, so take the lock and re-verify */
+    switch_mutex_lock(tech_pvt->mutex);
+    if (switch_channel_get_private(channel, bugname) != bug) {
+      switch_mutex_unlock(tech_pvt->mutex);
+      return SWITCH_STATUS_FALSE;
+    }
 
     tech_pvt->graceful_shutdown = 1;
 
     AudioPipe *pAudioPipe = static_cast<AudioPipe *>(tech_pvt->pAudioPipe);
     if (pAudioPipe) pAudioPipe->do_graceful_shutdown();
+    switch_mutex_unlock(tech_pvt->mutex);
 
     return SWITCH_STATUS_SUCCESS;
   }
