@@ -9,11 +9,13 @@ run_one() {
   echo "================== ${label} =================="
   # WS_OVERSIZED_EVERY: the mocks also send fragmented + >650KB inbound
   # messages, exercising the recv reassembly and oversized-discard paths
-  # (regression coverage for the c31364f class)
-  WS_OVERSIZED_EVERY="${WS_OVERSIZED_EVERY:-500}" WS_PORT=9000 python3 ws_mock.py 9000 >/tmp/ws9000.log 2>&1 &  W1=$!
+  # (regression coverage for the c31364f class). The mock's frame counter is
+  # PER CONNECTION and a soak connection lives only ~20-50 frames, so this
+  # must be well under that or the mode never fires.
+  WS_OVERSIZED_EVERY="${WS_OVERSIZED_EVERY:-25}" WS_PORT=9000 python3 ws_mock.py 9000 >/tmp/ws9000.log 2>&1 &  W1=$!
   W2=""
   if [ "$need_drop_mock" = "1" ]; then
-    WS_OVERSIZED_EVERY="${WS_OVERSIZED_EVERY:-500}" WS_DROP_AFTER=0.3 WS_PORT=9001 python3 ws_mock.py 9001 >/tmp/ws9001.log 2>&1 & W2=$!
+    WS_OVERSIZED_EVERY="${WS_OVERSIZED_EVERY:-25}" WS_DROP_AFTER=0.3 WS_PORT=9001 python3 ws_mock.py 9001 >/tmp/ws9001.log 2>&1 & W2=$!
   fi
   sleep 1
   ITER="${ITER:-200}" WORKERS="${WORKERS:-4}" WS_PORT=9000 WS_DROP_PORT=9001 setarch -R ./"$bin"
