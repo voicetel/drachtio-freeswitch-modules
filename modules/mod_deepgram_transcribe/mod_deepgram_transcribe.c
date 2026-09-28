@@ -221,6 +221,18 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_deepgram_transcribe_load)
   Macro expands to: switch_status_t mod_deepgram_transcribe_shutdown() */
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_deepgram_transcribe_shutdown)
 {
+	/* refuse to unload with live pipes: dg_transcribe_cleanup would destroy
+	   the lws context under live connections, leaving connecting pipes'
+	   reapers blocked in waitForClose() forever and detached reapers running
+	   module code on unmapped text. Same gate as mod_azure_transcribe /
+	   mod_aws_transcribe. */
+	int active = dg_transcribe_sessions_active();
+	if (active > 0) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+			"mod_deepgram_transcribe: %d session(s) still active; not unloading. Stop them first (uuid_deepgram_transcribe <uuid> stop) or hang up the calls.\n", active);
+		return SWITCH_STATUS_FALSE;
+	}
+
 	dg_transcribe_cleanup();
 	switch_event_free_subclass(TRANSCRIBE_EVENT_RESULTS);
 	return SWITCH_STATUS_SUCCESS;

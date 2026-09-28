@@ -54,6 +54,13 @@ namespace {
   static std::atomic<unsigned int> idxCallCount{0};
   static uint32_t playCount = 0;
 
+  /* Live-pipe count for the unload gate: incremented when a session's
+     AudioPipe is created and connected, decremented only when the last module
+     code touching it has run (the reaper lambda, after the pipe is deleted).
+     Unloading with this non-zero would destroy the lws context under live
+     pipes and let detached reapers execute unmapped module text. */
+  static std::atomic<int> g_activePipes{0};
+
   /* deepgram model / tier defaults by language */
   struct LanguageInfo {
       std::string tier;
@@ -137,10 +144,14 @@ namespace {
 
     std::string sessionId(tech_pvt->sessionId);
     uint32_t id = tech_pvt->id;
-    std::thread t([pAp, sessionId, id]{
+    std::thread t([pAp, sessionId, id]() mutable {
       pAp->finish();
       pAp->waitForClose();
       switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "%s (%u) got remote close\n", sessionId.c_str(), id);
+      /* delete the pipe (module code) BEFORE releasing the unload gate, so an
+         unload can never leave the dtor running on unmapped text */
+      pAp.reset();
+      --g_activePipes;
     });
     t.detach();
   }
@@ -524,6 +535,10 @@ extern "C" {
     }
     return SWITCH_STATUS_FALSE;
   }
+
+  int dg_transcribe_sessions_active() {
+    return g_activePipes.load();
+  }
 	
   switch_status_t dg_transcribe_session_init(switch_core_session_t *session, 
     responseHandler_t responseHandler, uint32_t samples_per_second, uint32_t channels, 
@@ -549,6 +564,10 @@ extern "C" {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "connecting now\n");
     pAudioPipe->connect();
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "connection in progress\n");
+    /* unload gate: from here the pipe is connecting; released either by
+       dg_transcribe_session_cleanup (bug-add failure) or by the reaper lambda
+       after the pipe is deleted */
+    ++g_activePipes;
     return SWITCH_STATUS_SUCCESS;
   }
 
@@ -562,9 +581,13 @@ extern "C" {
        hand it to the reaper, which finishes/closes it and deletes it once the
        close promise is fulfilled -- finish() works pre-handshake via
        m_gracefulShutdown, and CONNECT_FAIL fulfills the promise itself */
-    if (tech_pvt->pAudioPipe) reaper(tech_pvt);
+    /* the reaper lambda releases the unload gate when it finishes; if there
+       was no pipe to reap, release it here */
+    bool reaped = (tech_pvt->pAudioPipe != nullptr);
+    if (reaped) reaper(tech_pvt);
     destroy_tech_pvt(tech_pvt);
     switch_mutex_unlock(tech_pvt->mutex);
+    if (!reaped) --g_activePipes;
   }
 
 	switch_status_t dg_transcribe_session_stop(switch_core_session_t *session,int channelIsClosing, char* bugname) {

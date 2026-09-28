@@ -3,6 +3,9 @@
 
 switch_status_t dg_transcribe_init();
 switch_status_t dg_transcribe_cleanup();
+/* number of live AudioPipes (created, not yet reaped); the shutdown hook
+   refuses to unload while this is non-zero */
+int dg_transcribe_sessions_active();
 switch_status_t dg_transcribe_session_init(switch_core_session_t *session, responseHandler_t responseHandler, 
 		uint32_t samples_per_second, uint32_t channels, char* lang, int interim, char* bugname, void **ppUserData);
 switch_status_t dg_transcribe_session_stop(switch_core_session_t *session, int channelIsClosing, char* bugname);
