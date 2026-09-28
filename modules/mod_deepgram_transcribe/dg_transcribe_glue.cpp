@@ -588,7 +588,6 @@ extern "C" {
        MY_BUG_NAME for any custom name, which a later stop/start dereferenced
        after switch_core_media_bug_remove had already destroyed the bug */
     switch_channel_set_private(channel, MY_BUG_NAME, NULL);
-    if (!channelIsClosing) switch_core_media_bug_remove(session, &bug);
 
     deepgram::AudioPipe *pAudioPipe = static_cast<deepgram::AudioPipe *>(tech_pvt->pAudioPipe);
     if (pAudioPipe) reaper(tech_pvt);
@@ -598,6 +597,17 @@ extern "C" {
     // (switch_core_session_get_pool); it is owned by the pool and freed when the
     // pool is destroyed. Do NOT switch_mutex_destroy() it here — that would be a
     // double cleanup.
+
+    /* switch_core_media_bug_remove must NOT be called with tech_pvt->mutex
+       held: FS core's remove acquires session->bug_rwlock in write mode, while
+       the hangup path (switch_core_media_bug_remove_all at session-thread
+       exit) holds that same write lock across this module's CLOSE callback,
+       which acquires tech_pvt->mutex -- an ABBA deadlock on a stop-vs-hangup
+       race that permanently wedges both threads. Removing after the unlock is
+       safe: the private is cleared and the pipe reaped, dg_transcribe_frame
+       no-ops on the NULL pipe, and the CLOSE that remove fires synchronously
+       returns early on the cleared private. (Same fix as audio_fork.) */
+    if (!channelIsClosing) switch_core_media_bug_remove(session, &bug);
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) dg_transcribe_session_stop\n", id);
     return SWITCH_STATUS_SUCCESS;
   }
