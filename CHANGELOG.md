@@ -15,6 +15,108 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## v0.7.2 — 2026-09-28
+
+Closes both items v0.7.1 left open: the deepgram soak gap it documented as
+"deferred, not blocking", and the `google_glue.cpp` **[build]** it marked
+pending. Both turned out to be hiding untested code, not just missing
+confidence.
+
+### tests/soak: the deepgram soak was never connecting
+
+`mod_deepgram_transcribe`'s AudioPipe dials `LCCSCF_USE_SSL` unconditionally,
+so `run.sh` now generates a throwaway self-signed cert and serves the mock over
+`wss`, trusted client-side via `SSL_CERT_FILE` (no module-side change, no
+committed key, no skip-verify flag). The connected surface is now exercised
+directly instead of being deferred to another repo's harness:
+`CLIENT_ESTABLISHED`, the pre-handshake `finish()` record-and-complete, the
+ring-buffer writes, the inbound receive path, and `CloseStream` teardown
+exactly as the production reaper drives it.
+
+Root cause of the silent degradation: `websockets`' default
+`select_subprotocol` **raises** `NegotiationError` (HTTP 400) when the server
+is configured with a subprotocol list and the client offers none — and the
+deepgram pipe offers none (`i.protocol` is commented out in its
+`connect_client`). So all 200 iterations failed to connect while the run still
+reported `200/200 reapers completed` and passed. The mock now takes a callable
+that accepts whatever is offered or falls back to none.
+
+Two related corrections:
+
+- The mock must close the socket when it sees `CloseStream`. The production
+  reaper is `finish()` + `waitForClose()` with **no** `close()` of its own — it
+  depends on the remote close to fulfill the promise. Without that, every
+  graceful teardown in the soak blocks forever.
+- `soak_deepgram.cpp` now **fails** unless a majority of iterations reach
+  `CONNECT_SUCCESS` (160/200 observed). "Sanitizers clean" and "the path ran"
+  are different claims; the counter is what separates them. This assertion is
+  what caught the regression in the first place — the first run after the TLS
+  change failed with `0 CONNECT_SUCCESS`.
+
+### tests/soak: the oversized-discard path had never executed
+
+Worse than unverified: the `>650KB MAX_RECV_BUF_SIZE` discard path — added in
+v0.6.x and cited in v0.7.0 as "regression coverage for the c31364f class" — had
+**never run**, in either lineage. `MAX_RECV_BUF_SIZE` is only checked in the
+realloc branch, and a single-frame message is allocated whole on its first
+fragment (`len + lws_remaining_packet_payload`), so it never reallocs. Growing
+in 8KB steps also needs ~82 continuation frames to cross 650KB, and the mock's
+per-connection frame counter fired at frame 25 of connections lasting tens of
+milliseconds.
+
+The mock now sends a genuinely fragmented oversized message (200×4KB), on the
+**first** frame rather than only periodically, and `i % 5 == 1` holds the
+connection ~250ms so it can land. Observed on a 50-iteration probe: 68
+(audio_fork) and 82 (deepgram) discard events and ~6.7k reassembly reallocs,
+ASan clean — versus 0 and 0 before it, where the path had never run at all.
+
+`SOAK_LLL` widens the harness log mask, because the two lineages log the same
+recv markers at different severities (audio_fork `lwsl_notice`, deepgram
+`lwsl_err`); with the default `LLL_ERR` filter audio_fork's recv path looks
+unexercised even when it is running.
+
+### mod_google_transcribe: build gate discharged
+
+Both translation units now compile against the real generated vendor protos
+plus real FreeSWITCH 1.10.12 headers — `tests/buildcheck/gen_protos.sh`
+generates the googleapis protos (transitive imports included; the generated
+`cloud_speech.pb.h` pulls in `google/api/annotations.pb.h` and friends) at a
+**pinned** googleapis SHA, since tracking HEAD would make a clean compile
+today and a broken one tomorrow with no change here to blame. Link and load
+remain a fleet step.
+
+Two warnings that check surfaced, both in code the maintained side had just
+touched, now fixed: a `-Wformat-extra-args` (a `switch_log_printf` passing
+`var` to a format string with no `%` specifier, so the diarization variable was
+never actually logged — inherited from upstream `2565d15`) and a dead
+`size_t written` in the resampler block the `write` capture rewrote. The
+remaining inherited warnings are baselined in `tests/buildcheck/README.md` so a
+new one is visible rather than lost in noise.
+
+### docs
+
+- `AGENTS.md`: what is maintained, the verification legend and how to actually
+  run each gate, release discipline, and the harness traps above. There is no
+  CI here, so the gates are written down rather than enforced.
+- `docs/TESTING.md`: the subprotocol gotcha documented the **wrong** fix
+  ("the mock must negotiate `audio.drachtio.org`") — that instruction is what
+  produces the 400 for a client offering none. Corrected, plus the new gotchas.
+- `tests/soak/README.md` rewritten: the deepgram variant no longer "terminates
+  via CONNECT_FAIL", and its receive path is no longer borrowed from
+  `mod_ttsd_transcribe`.
+
+### Verification
+
+- **[unit]** `make -C tests` 9/9; `make -C tests sanitize` ASan/UBSan clean;
+  `HOST_COVERAGE=100.0%`.
+- **[tsan]** `tests/soak` full matrix, **two consecutive** OVERALL PASS runs:
+  ASan/UBSan/LSan + TSan for both pipes, 200 iters × 4 workers, 160/200
+  `CONNECT_SUCCESS`, 200/200 reapers, no sanitizer findings.
+- **[build]** google: *compile* only, both TUs, gcc 14 / debian trixie. Not
+  linked or loaded — that stays a fleet step.
+- Still unverified: the aws / azure vendor SDK paths (no SDKs on this host) and
+  all FreeSWITCH glue.
+
 ## v0.7.1 — 2026-09-28
 
 ### mod_google_transcribe: a `write` capture
