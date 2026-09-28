@@ -276,10 +276,14 @@ SWITCH_STANDARD_API(fork_function)
         if (!parse_ws_uri(channel, argv[2], &host[0], &path[0], &port, &sslFlags)) {
           switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "invalid websocket uri: %s\n", argv[2]);
         }
-				else if (sampling % 8000 != 0) {
-          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "invalid sample rate: %s\n", argv[4]);					
-				}
-        status = start_capture(lsession, flags, host, port, path, sampling, sslFlags, bugname, metadata);
+		else if (sampling % 8000 != 0) {
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "invalid sample rate: %s\n", argv[4]);
+		}
+        else {
+          /* previously start_capture ran unconditionally: an invalid URI
+             started a capture with uninitialized host/path/port/sslFlags */
+          status = start_capture(lsession, flags, host, port, path, sampling, sslFlags, bugname, metadata);
+        }
 			}
       else {
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "unsupported mod_audio_fork cmd: %s\n", argv[1]);
