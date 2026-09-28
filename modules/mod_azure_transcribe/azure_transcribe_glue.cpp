@@ -335,6 +335,12 @@ public:
 								switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
 									"GStreamer %p exception draining prebuffer: %s\n", this, e.what());
 								m_finished = true;
+								/* surface it: without the error event this is the exact
+								   silent-failure mode fixed for write() in v0.6.0 -- every
+								   later write() exits at the m_finished early-return and
+								   every SDK handler at its own guard, so the call streams
+								   audio into a dead recognizer forever with no signal */
+								notifyWriteFailure(e.what());
 								break;
 							}
 						}
@@ -348,6 +354,7 @@ public:
 						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
 							"GStreamer %p exception flushing prebuffer remainder: %s\n", this, e.what());
 						m_finished = true;
+						notifyWriteFailure(e.what());
 					}
 				}
 				m_prebufStaging.clear();
