@@ -45,8 +45,15 @@ means ASan and TSan were both clean.
   need real backends — see `../SANITIZERS.md`. Those remain a real-credentials
   live soak.
 
-## Scenarios (per iteration, round-robin)
+## Scenarios (per iteration, round-robin, `i % 5` in soak_audiopipe.cpp)
 
-graceful stop · hangup-mid-stream · far-end drop (mock server closes mid-stream) ·
-rapid restart · connect-fail (dead port). The mock server also pushes occasional
-inbound JSON to exercise the receive path.
+graceful stop (zero-length flush frame) · plain close via reaper ·
+far-end drop (mock server closes mid-stream) · text send + immediate
+teardown · connect-fail (dead port). No iteration restarts a pipe —
+"rapid restart" coverage comes from the 200×4 rapid connect/teardown
+cadence itself. The audio_fork soak also gates on 100% reaper
+completion (a waitForClose leak fails the run, as the deepgram variant
+always has). The mock server pushes occasional inbound JSON — plus,
+when `WS_OVERSIZED_EVERY` is active (run.sh default), deliberately
+fragmented and >650KB oversized messages for the recv reassembly and
+discard paths.
