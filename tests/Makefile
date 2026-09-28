@@ -13,8 +13,9 @@
 # of the modules' threading needs a sanitizer build of the module + a live call
 # (see SANITIZERS.md) — it cannot be done from this host harness.
 #
-# The repo's quality gate parses the HOST_COVERAGE line. This coverage figure is
-# for the host-testable units ONLY — it is NOT repo-wide or module coverage.
+# The release checklist reads the HOST_COVERAGE line (there is no CI in this
+# repo -- the check is a manual pre-tag step). This coverage figure is for the
+# host-testable units ONLY — it is NOT repo-wide or module coverage.
 
 CXX      ?= g++
 CXXFLAGS ?= -std=c++11 -g -O0 -Wall -Wextra

@@ -71,6 +71,12 @@ This proves the module compiles, links, and `dlopen`s into a running FreeSWITCH
 with all `switch_*` symbols resolved (and its API verb registers). It reuses
 callBroadcast's known-good FreeSWITCH installer with the module branch injected.
 
+The callBroadcast installer lives in its own private repo (not part of this
+tree); the closest public artifact for its build recipes is the
+[`ansible-role-fsmrf`](https://github.com/davehorton/ansible-role-fsmrf) role
+(also referenced from the module READMEs' Building sections). You need access
+to the installer repo to reproduce this layer.
+
 ### Pattern
 1. Build context in scratch (NOT the repo): copy `callBroadcast/freeswitch/`, and
    `git clone --branch <branch> <repo>` into it.
@@ -103,10 +109,13 @@ Key installer paths inside the image: `PREFIX=/usr/local/freeswitch`,
 `FS_SRC=/usr/local/src/callbroadcast/freeswitch`,
 `FORK_SRC=/usr/local/src/callbroadcast/drachtio-freeswitch-modules`.
 
-### The smoke test (the load gate) — do NOT parse `load` output
-`fs_cli -x "load mod_x"` prints `+OK Reloading XML` *before* the real result, which
-masks `-ERR module load file routine returned an error`. Use `module_exists`
-(authoritative): a module whose `_load` returned error will not exist.
+### The smoke test (the load gate)
+Gate on `module_exists` (authoritative) after boot. `fs_cli -x "load mod_x"`
+output-parsing is a footnote, not the method — see the next section for why a
+manual `load` into a running containerized FS is unreliable altogether: the
+gate uses the autoload boot path, where `+OK Reloading XML` (printed by `load`
+before the real result, masking `-ERR module load file routine returned an
+error`) never appears.
 
 ```sh
 /usr/local/freeswitch/bin/freeswitch -nonat -nc -nonatmap -nf >/tmp/fs.log 2>&1 &
