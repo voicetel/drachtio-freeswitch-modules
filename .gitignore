@@ -37,3 +37,10 @@ node_modules
 *.retry
 .vscode
 stubs/*
+
+# host unit-test / coverage artifacts (tests/Makefile coverage)
+tests/build/
+*.gcda
+*.gcno
+*.gcov
+coverage.info
