@@ -564,22 +564,37 @@ extern "C" {
 
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) fork_session_cleanup\n", id);
 
-    AudioPipe *pAudioPipe = static_cast<AudioPipe *>(tech_pvt->pAudioPipe);
     switch_media_bug_t *bug_to_remove = NULL;
 
     switch_mutex_lock(tech_pvt->mutex);
 
-    // get the bug again, now that we are under lock
+    /* Idempotence: two cleanups can be in flight for the same bugname (two API
+       stops share the session read lock, or an API stop races the hangup
+       CLOSE). The loser previously ran the whole teardown a second time on
+       state the winner had already torn down: it re-freed the playout list
+       (the free loop never NULLed the head), sent `text` into a pipe the
+       winner's reaper may already have deleted, and called reaper() on a
+       pAudioPipe that was already NULL -- shared_ptr<AudioPipe>(nullptr)
+       whose detached thread then dereferenced it. Bail out instead. */
     {
       switch_media_bug_t *bug = (switch_media_bug_t*) switch_channel_get_private(channel, bugname);
-      if (bug) {
-        switch_channel_set_private(channel, bugname, NULL);
-        bug_to_remove = bug;
+      if (!bug) {
+        switch_mutex_unlock(tech_pvt->mutex);
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
+          "(%u) fork_session_cleanup: already cleaned up\n", id);
+        return SWITCH_STATUS_FALSE;
       }
+      switch_channel_set_private(channel, bugname, NULL);
+      bug_to_remove = bug;
     }
+
+    /* read under the lock: the reaper nulls this (and the detached reaper
+       thread later deletes the pipe), so the pre-lock read raced both */
+    AudioPipe *pAudioPipe = static_cast<AudioPipe *>(tech_pvt->pAudioPipe);
 
     // delete any temp files
     struct playout* playout = tech_pvt->playout;
+    tech_pvt->playout = NULL;
     while (playout) {
       std::remove(playout->file);
       free(playout->file);
