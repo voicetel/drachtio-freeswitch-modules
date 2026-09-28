@@ -96,7 +96,10 @@ int main() {
   int workers = getenv("WORKERS") ? atoi(getenv("WORKERS")) : 4;
   if (getenv("WS_PORT")) PORT = atoi(getenv("WS_PORT"));
 
-  AudioPipe::initialize(2 /*service threads: exercise the per-context filtering*/, LLL_ERR, logger);
+  /* 2 requested: initialize() caps >1 to 1 at runtime (multi-context connect
+     adoption is not thread-safe), so what actually runs is the CAP path with
+     a single context -- cross-context discrimination does not execute here */
+  AudioPipe::initialize(2 /*requested service threads: exercises the cap*/, LLL_ERR, logger);
   std::this_thread::sleep_for(std::chrono::seconds(2));
 
   std::vector<std::thread> ws;
