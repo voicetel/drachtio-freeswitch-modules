@@ -352,8 +352,12 @@ public:
 				   error outcome via OnResponseCallback, which sets m_finished
 				   (verified against aws-sdk-cpp source; the client destructor's
 				   RAIICounter wait + executor join back-stop the teardown
-				   regardless). */
-				if (!m_cond.wait_for(lk, std::chrono::seconds(10), ready)) {
+				   regardless).
+				   wait_until (not wait_for) against the deadline armed at Close()
+				   time: a fresh 10s window per wake would let a trickling
+				   connection push the abort arbitrarily far past the intended
+				   "10s after shutdown". */
+				if (!m_cond.wait_until(lk, m_shutdownDeadline, ready)) {
 					if (!requestAborted) {
 						requestAborted = true;
 						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
@@ -438,6 +442,13 @@ public:
 				shutdownInitiated = true;
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::writing disconnect event %p\n", this);
 
+				/* arm the bounded-shutdown deadline once, at shutdown time: the
+				   wait in the loop above compares against this fixed point so
+				   intervening wakes (e.g. trailing transcripts) cannot extend it */
+				if (m_shutdownDeadline == std::chrono::steady_clock::time_point{}) {
+					m_shutdownDeadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+				}
+
 				/* load the atomic pointer once into a local before dereferencing */
 				AudioStream* pStream = m_pStream.load();
 				if (pStream) {
@@ -507,6 +518,9 @@ private:
 	   (m_audioBufferMutex -> m_mutex), never the reverse, so there is no cycle. */
 	std::mutex m_audioBufferMutex;
 	uint32_t m_prebufChunkSize;     /* byte size of each m_audioBuffer chunk */
+	/* bounded-shutdown deadline, armed once when the worker initiates the
+	   Close() sequence and only read/written by the worker thread itself */
+	std::chrono::steady_clock::time_point m_shutdownDeadline {};
 	SimpleBuffer m_audioBuffer;
 	/* sub-chunk staging for the pre-connect path; guarded by m_audioBufferMutex */
 	std::vector<unsigned char> m_prebufStaging;
@@ -533,6 +547,11 @@ static void *SWITCH_THREAD_FUNC aws_transcribe_thread(switch_thread_t *thread, v
 		/* an exception escaping a SWITCH_THREAD_FUNC is std::terminate -- the
 		   whole of FreeSWITCH, not just this session */
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "transcribe_thread: cb %p exception: %s\n", (void *) cb, e.what());
+	} catch (...) {
+		/* belt-and-braces: every identified throw source derives from
+		   std::exception, but a stray non-std exception would still
+		   terminate the process */
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "transcribe_thread: cb %p unknown exception\n", (void *) cb);
 	}
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcribe_thread: stopping cb %p\n", (void *) cb);
