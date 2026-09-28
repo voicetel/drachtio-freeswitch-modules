@@ -289,7 +289,7 @@ public:
     if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_SPEAKER_DIARIZATION"))) {
       auto* diarization_config = config->mutable_diarization_config();
       diarization_config->set_enable_speaker_diarization(true);
-      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(m_session), SWITCH_LOG_DEBUG, "enabling speaker diarization\n", var);
+      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(m_session), SWITCH_LOG_DEBUG, "enabling speaker diarization (%s)\n", var);
       if ((var = switch_channel_get_variable(channel, "GOOGLE_SPEECH_SPEAKER_DIARIZATION_MIN_SPEAKER_COUNT"))) {
         int count = std::max(atoi(var), 1);
         switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(m_session), SWITCH_LOG_DEBUG, "setting min speaker count to %d\n", count);
