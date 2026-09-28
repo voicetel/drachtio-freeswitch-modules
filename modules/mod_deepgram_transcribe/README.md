@@ -8,15 +8,17 @@ A Freeswitch module that generates real-time transcriptions on a Freeswitch chan
 The freeswitch module exposes the following API commands:
 
 ```
-uuid_deepgram_transcribe <uuid> start <lang-code> [interim]
+uuid_deepgram_transcribe <uuid> start <lang-code> [interim] [stereo|mono] [bugname]
 ```
 Attaches media bug to channel and performs streaming recognize request.
 - `uuid` - unique identifier of Freeswitch channel
-- `lang-code` - a valid AWS [language code](https://docs.deepgram.amazon.com/transcribe/latest/dg/what-is-transcribe.html) that is supported for streaming transcription
+- `lang-code` - a valid Deepgram [language code](https://developers.deepgram.com/documentation/features/language/) that is supported for streaming transcription
 - `interim` - If the 'interim' keyword is present then both interim and final transcription results will be returned; otherwise only final transcriptions will be returned
+- `stereo` - If the 'stereo' keyword is present, both caller and callee audio are captured as a two-channel (stereo) stream; otherwise only the caller's audio is captured
+- `bugname` - optional name for the media bug (default: `deepgram_transcribe`); use the same name with `stop` to stop a specifically-named transcription
 
 ```
-uuid_deepgram_transcribe <uuid> stop
+uuid_deepgram_transcribe <uuid> stop [bugname]
 ```
 Stop transcription on the channel.
 
@@ -29,6 +31,7 @@ Stop transcription on the channel.
 | DEEPGRAM_SPEECH_CUSTOM_MODEL | custom model id |
 | DEEPGRAM_SPEECH_MODEL | https://developers.deepgram.com/documentation/features/model/ |
 | DEEPGRAM_SPEECH_MODEL_VERSION | https://developers.deepgram.com/documentation/features/version/ |
+| DEEPGRAM_SPEECH_ENABLE_SMART_FORMAT | if set, applies [smart formatting](https://developers.deepgram.com/documentation/features/smart-format/) to transcripts (also enables no_delay) |
 | DEEPGRAM_SPEECH_ENABLE_AUTOMATIC_PUNCTUATION | https://developers.deepgram.com/documentation/features/punctuate/ |
 | DEEPGRAM_SPEECH_PROFANITY_FILTER | https://developers.deepgram.com/documentation/features/profanity-filter/ |
 | DEEPGRAM_SPEECH_REDACT | https://developers.deepgram.com/documentation/features/redact/ |
