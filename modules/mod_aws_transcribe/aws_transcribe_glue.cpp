@@ -727,6 +727,19 @@ extern "C" {
 
 			// close connection and get final responses
 			switch_mutex_lock(cb->mutex);
+			/* A concurrent second stop (an API stop racing the hangup CLOSE
+			   callback -- both arrive holding only the session read-rwlock)
+			   fetches the same bug/cb before the first clears the private, then
+			   blocks here for the whole finish/join sequence -- which can now
+			   legally take 10s+ (bounded shutdown). Running the teardown a
+			   second time would switch_core_media_bug_remove the pointer the
+			   first stop already freed. Re-verify under the lock that this bug
+			   still owns the channel-private slot; if not, the other stop won
+			   and the work is done. */
+			if (switch_channel_get_private(channel, bugname) != bug) {
+				switch_mutex_unlock(cb->mutex);
+				return SWITCH_STATUS_SUCCESS;
+			}
 			/* order matters: set the flag before loading the pointer (the worker
 			   publishes the pointer, then checks the flag) */
 			cb->stop_requested.store(1);
