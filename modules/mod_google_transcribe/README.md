@@ -2,7 +2,7 @@
 
 A Freeswitch module that generates real-time transcriptions on a Freeswitch channel by using Google's Speech-to-Text API.
 
-Optionally, the connection to the google cloud recognizer can be delayed until voice activity has been detected.  This can be useful in cases where it is desired to minimize the costs of streaming audio for transcription.  This setting is governed by the channel variables starting with 1RECOGNIZER_VAD`, as described below.
+Optionally, the connection to the google cloud recognizer can be delayed until voice activity has been detected.  This can be useful in cases where it is desired to minimize the costs of streaming audio for transcription.  This setting is governed by the channel variables starting with `RECOGNIZER_VAD`, as described below.
 
 ## API
 
@@ -67,6 +67,7 @@ Additional google speech options can be set through freeswitch channel variables
 | RECOGNIZER_VAD_MODE | An integer value 0-3 from less to more aggressive vad detection (default: 2).|
 | RECOGNIZER_VAD_VOICE_MS | The number of milliseconds of voice activity that is required to trigger the connection to google cloud, when START_RECOGNIZING_ON_VAD is set (default: 250).|
 | RECOGNIZER_VAD_DEBUG | if >0 vad debug logs will be generated (default: 0).|
+| RECOGNIZER_DEBUG_AUDIO_LEVELS | if >0 on a stereo capture, debug-log each channel's peak audio level about once per second of audio, and each response result's `channel_tag` (default: 0). Useful for diagnosing a silent channel vs. one the recognizer ignores when using GOOGLE_SPEECH_SEPARATE_RECOGNITION_PER_CHANNEL.|
 
 
 ### Events
@@ -89,8 +90,6 @@ Additional google speech options can be set through freeswitch channel variables
 **google_transcribe::no_audio_detected** - returned when google has returned an error indicating that no audio was received for a lengthy period of time.
 
 **google_transcribe::max_duration_exceeded** - returned when google has returned an an indication that a long-running transcription has been stopped due to a max duration limit (305 seconds) on their side.  It is the applications responsibility to respond by starting a new transcription session, if desired.
-
-**google_transcribe::no_audio_detected** - returned when google has not received any audio for some reason.
 
 ## Usage
 When using [drachtio-fsrmf](https://www.npmjs.com/package/drachtio-fsmrf), you can access this API command via the api method on the 'endpoint' object.

@@ -15,6 +15,26 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## Unreleased
+
+mod_google_transcribe: hardened the v0.6.3-era stereo-channel debug
+instrumentation (e2d2c07) — behavior change: it is now opt-in.
+- The per-frame stereo peak-level scan and the per-result `channel_tag`
+  DEBUG logging are gated on a new `RECOGNIZER_DEBUG_AUDIO_LEVELS` channel
+  variable (default off), so there is zero per-frame cost in normal
+  operation (`switch_log_check` does not exist in FS 1.10, so a log-level
+  gate was not available).
+- Report cadence is now ~1 second of audio at any ptime (per-channel sample
+  tally vs the read rate) instead of a hard-coded 50-frame count that
+  assumed 20ms ptime; the last-frame `samples`/`datalen` in the report are
+  labeled as such, and `transcript_len` was renamed `transcript_bytes`
+  (it is a UTF-8 byte count).
+- Fixed `cb->samples_per_second`: declared in `cap_cb` and passed to
+  `google_speech_session_init` since upstream, but never assigned — any
+  future use would have read a zeroed field.
+- README: documented the new variable, fixed the `1RECOGNIZER_VAD` typo and
+  the duplicated `no_audio_detected` event entry.
+
 ## v0.6.3 — 2026-07-02
 Docs only — a docs-vs-code audit found two shipped claims contradicting the
 code after v0.6.1:

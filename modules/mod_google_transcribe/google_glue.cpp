@@ -507,14 +507,16 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
       return nullptr;
     }
     auto speech_event_type = response.speech_event_type();
-    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-      "grpc_read_thread: response results=%d speech_event_type=%d\n", response.results_size(), (int) speech_event_type);
-    for (int r = 0; r < response.results_size(); ++r) {
-      const auto& result = response.results(r);
+    if (cb->dbg_audio_levels) {
       switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-        "grpc_read_thread: result %d channel_tag=%d is_final=%d alternatives=%d transcript_len=%zu\n",
-        r, result.channel_tag(), result.is_final() ? 1 : 0, result.alternatives_size(),
-        result.alternatives_size() > 0 ? result.alternatives(0).transcript().size() : (size_t) 0);
+        "grpc_read_thread: response results=%d speech_event_type=%d\n", response.results_size(), (int) speech_event_type);
+      for (int r = 0; r < response.results_size(); ++r) {
+        const auto& result = response.results(r);
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
+          "grpc_read_thread: result %d channel_tag=%d is_final=%d alternatives=%d transcript_bytes=%zu\n",
+          r, result.channel_tag(), result.is_final() ? 1 : 0, result.alternatives_size(),
+          result.alternatives_size() > 0 ? result.alternatives(0).transcript().size() : (size_t) 0);
+      }
     }
     if (response.has_error()) {
       Status status = response.error();
@@ -724,6 +726,11 @@ extern "C" {
       cb->got_end_of_utterance = 0;
       cb->wants_single_utterance = single_utterance;
       cb->channels = channels;
+      /* per-channel sample rate of the media-bug frames (frame.samples is
+       * per-channel); used to cadence the debug peak-level report at ~1s of
+       * audio regardless of ptime. Was previously declared but never set. */
+      cb->samples_per_second = samples_per_second;
+      cb->dbg_audio_levels = switch_channel_var_true(channel, "RECOGNIZER_DEBUG_AUDIO_LEVELS") ? 1 : 0;
       if (play_file != NULL){
         cb->play_file = 1;
       }
@@ -895,20 +902,25 @@ extern "C" {
           streamer = (GStreamer *) cb->streamer.load();
           while (streamer && switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS && !switch_test_flag((&frame), SFF_CNG)) {
             if (frame.datalen) {
-              if (cb->channels == 2) {
-                /* debug: report each channel's peak level about once a second,
-                   to tell a silent channel from one the recognizer ignores */
+              if (cb->channels == 2 && cb->dbg_audio_levels) {
+                /* debug: report each channel's peak level about once per
+                   second of audio, to tell a silent channel from one the
+                   recognizer ignores. Opt-in via RECOGNIZER_DEBUG_AUDIO_LEVELS
+                   so there is zero per-frame cost when not enabled. */
                 const int16_t *s = (const int16_t *) frame.data;
                 for (uint32_t i = 0; i + 1 < frame.datalen / sizeof(int16_t); i += 2) {
                   int32_t l = abs((int32_t) s[i]), rr = abs((int32_t) s[i + 1]);
                   if (l > cb->dbg_peak[0]) cb->dbg_peak[0] = l;
                   if (rr > cb->dbg_peak[1]) cb->dbg_peak[1] = rr;
                 }
-                if (++cb->dbg_frames >= 50) {
+                /* frame.samples is per-channel, so this tallies one second of
+                   audio at any ptime (not wall time: CNG-only gaps pause it) */
+                cb->dbg_samples += frame.samples;
+                if (cb->dbg_samples >= cb->samples_per_second) {
                   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-                    "capture_callback: stereo peaks read=%d write=%d over %u frames (samples=%u datalen=%u)\n",
-                    cb->dbg_peak[0], cb->dbg_peak[1], cb->dbg_frames, frame.samples, frame.datalen);
-                  cb->dbg_frames = 0;
+                    "capture_callback: stereo peaks read=%d write=%d over %u samples (~1s; last_frame_samples=%u last_frame_datalen=%u)\n",
+                    cb->dbg_peak[0], cb->dbg_peak[1], cb->dbg_samples, frame.samples, frame.datalen);
+                  cb->dbg_samples = 0;
                   cb->dbg_peak[0] = cb->dbg_peak[1] = 0;
                 }
               }
