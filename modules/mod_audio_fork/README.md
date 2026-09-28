@@ -12,7 +12,7 @@ A Freeswitch module that attaches a bug to a media server endpoint and streams L
 The freeswitch module exposes the following API commands:
 
 ```
-uuid_audio_fork <uuid> start <wss-url> <mix-type> <sampling-rate> <metadata>
+uuid_audio_fork <uuid> start <wss-url> <mix-type> <sampling-rate> [bugname] [metadata]
 ```
 Attaches media bug and starts streaming audio stream to the back-end server.  Audio is streamed in linear 16 format (16-bit PCM encoding) with either one or two channels depending on the mix-type requested.
 - `uuid` - unique identifier of Freeswitch channel
@@ -24,6 +24,8 @@ Attaches media bug and starts streaming audio stream to the back-end server.  Au
 - `sampling-rate` - choice of
   - "8k" = 8000 Hz sample rate will be generated
   - "16k" = 16000 Hz sample rate will be generated
+  - any other numeric value is used as the sample rate in Hz (must be a multiple of 8000)
+- `bugname` - optional name for the media bug (default: `audio_fork`); use the same name with `stop`/`pause`/`resume`/`graceful-shutdown` to control a specifically-named fork
 - `metadata` - a text frame of arbitrary data to send to the back-end server immediately upon connecting.  Once this text frame has been sent, the incoming audio will be sent in binary frames to the server.
 
 ```
@@ -32,7 +34,18 @@ uuid_audio_fork <uuid> send_text <metadata>
 Send a text frame of arbitrary data to the remote server (e.g. this can be used to notify of DTMF events).
 
 ```
-uuid_audio_fork <uuid> stop <metadata>
+uuid_audio_fork <uuid> pause [bugname]
+uuid_audio_fork <uuid> resume [bugname]
+```
+Temporarily stop / resume streaming audio to the remote server (the websocket connection stays open).
+
+```
+uuid_audio_fork <uuid> graceful-shutdown [bugname]
+```
+Signals the server that no more audio will be coming: a zero-length binary frame is sent as a flush signal and the connection is closed once the server acknowledges (used to collect any final responses before closing).
+
+```
+uuid_audio_fork <uuid> stop [bugname] [metadata]
 ```
 Closes websocket connection and detaches media bug, optionally sending a final text frame over the websocket connection before closing.
 
