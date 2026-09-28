@@ -210,9 +210,15 @@ public:
 				   fires its own error event; skip the duplicate on that path. */
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "GStreamer: azure session stopped unexpectedly (not initiated by us)\n");
 				if (!m_canceled) {
+					/* terminal from the consumer's perspective: this stop was not
+					   ours, every remaining handler now gates on m_finished (never
+					   set on this path) or m_stopped, so no event with
+					   transcription-session-finished=true can ever follow. Emit the
+					   error with finished=true so the consumer knows the
+					   transcription session is over. */
 					responseHandler(lock.get(), TRANSCRIBE_EVENT_ERROR,
 						"{\"type\":\"error\",\"error\":\"azure speech session stopped unexpectedly\"}",
-						m_bugname.c_str(), m_finished);
+						m_bugname.c_str(), 1);
 				}
 			}
 		};
@@ -280,7 +286,11 @@ public:
         cJSON_AddStringToObject(json, "type", "error");
         cJSON_AddStringToObject(json, "error", details.c_str());
         char* jsonString = cJSON_PrintUnformatted(json);
-        responseHandler(psession, TRANSCRIBE_EVENT_ERROR, jsonString, m_bugname.c_str(), m_finished);
+        /* terminal: a Canceled session never recovers, every other handler
+           gates on m_finished (not set here) or m_canceled, and the following
+           SessionStopped is suppressed as a duplicate -- without finished=true
+           the consumer waits forever for a terminal event that never comes */
+        responseHandler(psession, TRANSCRIBE_EVENT_ERROR, jsonString, m_bugname.c_str(), 1);
         free(jsonString);
         cJSON_Delete(json);
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer recognition canceled, error %d: %s\n", code, details.c_str());
