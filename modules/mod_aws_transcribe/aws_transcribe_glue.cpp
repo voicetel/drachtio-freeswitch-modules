@@ -383,6 +383,25 @@ public:
 			if (!m_connected && !m_connecting) return;
 
 			if (m_transcript.TranscriptHasBeenSet()) {
+				/* Taking SessionLock (and calling m_responseHandler) while holding
+				   m_mutex inverted the lock order against the SDK callbacks, which
+				   take SessionLock first and then m_mutex / m_audioBufferMutex --
+				   with a session-rwlock writer queued on the destroy path, a
+				   three-way deadlock. Copy the transcript out and clear it under
+				   the lock, then deliver with m_mutex released (ordering among
+				   transcripts is preserved: single worker thread).
+				   Clearing unconditionally matters too: leaving a set transcript
+				   when the session is gone kept TranscriptHasBeenSet() true, so the
+				   wait predicate held forever -- the worker spun at 100% CPU and
+				   m_cond.wait_for returned immediately every iteration, meaning the
+				   10s overdue timeout never fired and the DisableRequestProcessing()
+				   bounded shutdown failed open exactly on the dead-network calls it
+				   exists for. */
+				TranscriptEvent transcript = m_transcript;
+				TranscriptEvent empty;
+				m_transcript = empty;
+				lk.unlock();
+
 				SessionLock psession(m_sessionId.c_str());
 				if (psession) {
 
@@ -391,7 +410,7 @@ public:
 					/* build the transcript JSON via cJSON so transcript text is correctly escaped;
 					   shape is unchanged: [ {"is_final": <bool>, "alternatives": [ {"transcript": "<text>"} ]} ] */
 					cJSON* root = cJSON_CreateArray();
-					for (auto&& r : m_transcript.GetTranscript().GetResults()) {
+					for (auto&& r : transcript.GetTranscript().GetResults()) {
 						if (!isFinal && !r.GetIsPartial()) isFinal = true;
 						cJSON* result = cJSON_CreateObject();
 						cJSON_AddBoolToObject(result, "is_final", r.GetIsPartial() ? false : true);
@@ -411,16 +430,9 @@ public:
 					if (jsonString) free(jsonString);
 					cJSON_Delete(root);
 				}
-				/* Clear unconditionally, session or not: leaving a set transcript
-				   when the session is gone kept TranscriptHasBeenSet() true, so the
-				   wait predicate held forever -- the worker spun at 100% CPU and,
-				   worse, m_cond.wait_for returned immediately on every iteration,
-				   meaning the 10s overdue timeout never fired and the
-				   DisableRequestProcessing() bounded shutdown failed open exactly
-				   on the dead-network calls it exists for. With the session gone
-				   there is no consumer for the transcript; drop it. */
-				TranscriptEvent empty;
-				m_transcript = empty;
+				/* with the session gone there is no consumer; the local copy is
+				   simply dropped */
+				lk.lock();
 			}
 			if (m_finishing) {
 				shutdownInitiated = true;
