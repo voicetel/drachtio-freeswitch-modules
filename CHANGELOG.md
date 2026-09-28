@@ -15,7 +15,10 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
-## Unreleased
+## v0.7.0 — 2026-09-28
+
+Second full adversarial review of the maintained surface (all five
+maintained modules + tests/docs infra), one commit per issue.
 
 mod_google_transcribe: hardened the v0.6.3-era stereo-channel debug
 instrumentation (e2d2c07) — behavior change: it is now opt-in.
@@ -112,9 +115,16 @@ maintained modules + tests/docs infra), one commit per issue:
   the installer's provenance; soak scripts got exec bits and skip the unused
   drop-mock for the TLS-only deepgram runs.
 
-Verification: host unit tests 9/9 + ASan/UBSan clean. The module changes
-require the Docker build/load gate and both soaks (docs/TESTING.md Layer 3-4)
-before release-tagging.
+### Verification
+- **[unit]** `make -C tests` + `sanitize`: 9/9 pass, ASan/UBSan clean.
+- **[tsan]** `tests/soak` (both AudioPipes, Docker): OVERALL PASS — ASan +
+  UBSan + LSan and TSan clean, reaper gates 200/200 on both variants, with
+  the new fragmented/oversized inbound mode active (inbound events rose from
+  ~360 to ~570 per run, confirming the new paths execute).
+- **Not verified here:** the Layer-3 Docker build/load gate for the five
+  modules (the google/aws/azure glue changes are compile-unverified — no
+  FreeSWITCH headers on the authoring host), and live-credential vendor
+  streaming (unchanged requirement, see `docs/TESTING.md`).
 
 ## v0.6.3 — 2026-07-02
 Docs only — a docs-vs-code audit found two shipped claims contradicting the
