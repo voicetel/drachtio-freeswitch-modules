@@ -252,6 +252,17 @@ SWITCH_STANDARD_API(fork_function)
           if (argv[5][0] == '{' || argv[5][0] == '[') metadata = argv[5];
           else bugname = argv[5];
         }
+        if (strlen(bugname) > MAX_BUG_LEN) {
+          /* the channel private is stored under the FULL name but
+             tech_pvt->bugname is a MAX_BUG_LEN-truncated copy used by the
+             hangup CLOSE path -- a longer name made that cleanup miss the
+             private and leak the AudioPipe + open connection for the life of
+             the process */
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+            "bugname too long (max %d chars): %s\n", MAX_BUG_LEN, bugname);
+          switch_core_session_rwunlock(lsession);
+          goto done;
+        }
         if (0 == strcmp(argv[3], "mixed")) {
           flags |= SMBF_WRITE_STREAM ;
         }
