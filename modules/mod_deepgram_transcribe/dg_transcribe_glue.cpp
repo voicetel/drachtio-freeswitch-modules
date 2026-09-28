@@ -336,12 +336,18 @@ namespace {
               // deletes it during cleanup. dg_transcribe_frame gates on the
               // connection state, so it will not use a failed pipe.
               /* lws passes a NULL error string for some connect failures (the
-                 AudioPipe forwards its `in` pointer as-is); streaming NULL into
-                 an ostream or %s is undefined behavior */
+                  AudioPipe forwards its `in` pointer as-is); streaming NULL into
+                  an ostream or %s is undefined behavior */
               const char* reason = message ? message : "unknown";
-              std::stringstream json;
-              json << "{\"reason\":\"" << reason << "\"}";
-              tech_pvt->responseHandler(session, TRANSCRIBE_EVENT_CONNECT_FAIL, (char *) json.str().c_str(), tech_pvt->bugname, finished);
+              /* build via cJSON: the raw lws error can contain quotes /
+                 backslashes / control chars, which broke the hand-rolled
+                 {"reason":"..."} JSON for the consumer */
+              cJSON* json = cJSON_CreateObject();
+              cJSON_AddStringToObject(json, "reason", reason);
+              char* jsonString = cJSON_PrintUnformatted(json);
+              tech_pvt->responseHandler(session, TRANSCRIBE_EVENT_CONNECT_FAIL, jsonString, tech_pvt->bugname, finished);
+              free(jsonString);
+              cJSON_Delete(json);
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_NOTICE, "connection failed: %s\n", reason);
             }
             break;
