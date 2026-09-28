@@ -149,6 +149,17 @@ int AudioPipe::lws_callback(struct lws *wsi,
           assert(nullptr == ap->m_recv_buf);
           ap->m_recv_buf_discarding = false;
           ap->m_recv_buf_len = len + lws_remaining_packet_payload(wsi);
+          /* the cap was previously only enforced in the realloc branch below,
+             so a message that arrives as a single frame (or whose full length
+             already exceeds the cap) was malloc'd, copied and delivered whole
+             -- unbounded, server-controlled. Discard up front instead. Same
+             fix as the audio_fork lineage copy. */
+          if (ap->m_recv_buf_len > MAX_RECV_BUF_SIZE) {
+            lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE message of %zu bytes exceeds max buffer, discarding.\n", ap->m_recv_buf_len);
+            ap->m_recv_buf_len = 0;
+            ap->m_recv_buf_discarding = !lws_is_final_fragment(wsi);
+            return 0;
+          }
           ap->m_recv_buf = (uint8_t*) malloc(ap->m_recv_buf_len);
           if (nullptr == ap->m_recv_buf) {
             lwsl_err("AudioPipe::lws_service_thread LWS_CALLBACK_CLIENT_RECEIVE recv buffer alloc failed, dropping message.\n");
