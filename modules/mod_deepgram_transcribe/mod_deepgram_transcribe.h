@@ -21,6 +21,23 @@
 #define MAX_PATH_LEN (4096)
 #define MAX_BUG_LEN (64)
 
+/* media_bug_read's SMBF_STEREO path writes 2x the buflen it guards against;
+   this is the exact worst-case bound (full rationale in mod_azure_transcribe.h) */
+#define MEDIA_BUG_FRAME_BUF_SIZE (2 * SWITCH_RECOMMENDED_BUFFER_SIZE)
+
+#if (defined(__cplusplus) && __cplusplus >= 201103L) || \
+    (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L)
+/* drift guard: the factor must stay >= the SMBF_STEREO write of 2x
+   decoded_bytes_per_packet. Fails the build if "tidied" back to 8192. */
+#if defined(__cplusplus)
+static_assert(MEDIA_BUG_FRAME_BUF_SIZE >= 2 * SWITCH_RECOMMENDED_BUFFER_SIZE,
+              "media_bug_read SMBF_STEREO writes 2x decoded_bytes_per_packet");
+#else
+_Static_assert(MEDIA_BUG_FRAME_BUF_SIZE >= 2 * SWITCH_RECOMMENDED_BUFFER_SIZE,
+               "media_bug_read SMBF_STEREO writes 2x decoded_bytes_per_packet");
+#endif
+#endif
+
 typedef void (*responseHandler_t)(switch_core_session_t* session, const char* eventName, const char* json, const char* bugname, int finished);
 
 struct private_data {

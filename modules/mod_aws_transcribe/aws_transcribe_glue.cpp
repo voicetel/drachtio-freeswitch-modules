@@ -842,15 +842,15 @@ extern "C" {
 
 	switch_bool_t aws_transcribe_frame(switch_media_bug_t *bug, void* user_data) {
 		switch_core_session_t *session = switch_core_media_bug_get_session(bug);
-		/* 2x for SMBF_STEREO: media_bug_read's stereo path memcpy's up to
-		   2 x decoded_bytes_per_packet but only guards buflen against the
-		   mono count (see the azure commit for the full rationale) */
-		uint8_t data[2 * SWITCH_RECOMMENDED_BUFFER_SIZE];
+		/* SMBF_STEREO: media_bug_read writes 2x the buflen it guards against;
+		   MEDIA_BUG_FRAME_BUF_SIZE is the exact worst case (rationale in
+		   mod_azure_transcribe.h) */
+		uint8_t data[MEDIA_BUG_FRAME_BUF_SIZE];
 		switch_frame_t frame = {};
 		struct cap_cb *cb = (struct cap_cb *) user_data;
 
 		frame.data = data;
-		frame.buflen = 2 * SWITCH_RECOMMENDED_BUFFER_SIZE;
+		frame.buflen = MEDIA_BUG_FRAME_BUF_SIZE;
 
 		if (switch_mutex_trylock(cb->mutex) == SWITCH_STATUS_SUCCESS) {
 			GStreamer* streamer = (GStreamer *) cb->streamer.load();

@@ -700,13 +700,13 @@ extern "C" {
         }
       }
       else {
-        /* 2x for SMBF_STEREO: media_bug_read's stereo path memcpy's up to
-           2 x decoded_bytes_per_packet but only guards buflen against the
-           mono count (see the azure commit for the full rationale) */
-        uint8_t data[2 * SWITCH_RECOMMENDED_BUFFER_SIZE];
+        /* SMBF_STEREO: media_bug_read writes 2x the buflen it guards against;
+           MEDIA_BUG_FRAME_BUF_SIZE is the exact worst case (rationale in
+           mod_azure_transcribe.h) */
+        uint8_t data[MEDIA_BUG_FRAME_BUF_SIZE];
         switch_frame_t frame = { 0 };
         frame.data = data;
-        frame.buflen = 2 * SWITCH_RECOMMENDED_BUFFER_SIZE;
+        frame.buflen = MEDIA_BUG_FRAME_BUF_SIZE;
         while (switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS) {
           if (frame.datalen) {
             /* speex's interleaved API takes out_len in samples PER CHANNEL and

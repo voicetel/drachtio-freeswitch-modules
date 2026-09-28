@@ -23,6 +23,23 @@
 #define TRANSCRIBE_EVENT_VAD_DETECTED "google_transcribe::vad_detected"
 #define TRANSCRIBE_EVENT_ERROR      "jambonz_transcribe::error"
 
+/* media_bug_read's SMBF_STEREO path writes 2x the buflen it guards against;
+   this is the exact worst-case bound (full rationale in mod_azure_transcribe.h) */
+#define MEDIA_BUG_FRAME_BUF_SIZE (2 * SWITCH_RECOMMENDED_BUFFER_SIZE)
+
+#if (defined(__cplusplus) && __cplusplus >= 201103L) || \
+    (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L)
+/* drift guard: the factor must stay >= the SMBF_STEREO write of 2x
+   decoded_bytes_per_packet. Fails the build if "tidied" back to 8192. */
+#if defined(__cplusplus)
+static_assert(MEDIA_BUG_FRAME_BUF_SIZE >= 2 * SWITCH_RECOMMENDED_BUFFER_SIZE,
+              "media_bug_read SMBF_STEREO writes 2x decoded_bytes_per_packet");
+#else
+_Static_assert(MEDIA_BUG_FRAME_BUF_SIZE >= 2 * SWITCH_RECOMMENDED_BUFFER_SIZE,
+               "media_bug_read SMBF_STEREO writes 2x decoded_bytes_per_packet");
+#endif
+#endif
+
 
 // simply write a wave file
 //#define DEBUG_TRANSCRIBE 0
