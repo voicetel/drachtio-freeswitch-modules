@@ -297,6 +297,18 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_aws_transcribe_load)
   Macro expands to: switch_status_t mod_aws_transcribe_shutdown() */
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_aws_transcribe_shutdown)
 {
+	int active = aws_transcribe_active_sessions();
+	if (active > 0) {
+		/* Refuse the unload: the per-session worker threads still own live
+		   TranscribeStreamingServiceClients, and Aws::ShutdownAPI below would
+		   run the SDK's global teardown (curl/exeuctor globals) under them --
+		   undefined behavior / crash. FS keeps the module loaded when shutdown
+		   returns FALSE. */
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+			"mod_aws_transcribe: %d transcription session(s) still active; refusing unload -- stop transcriptions (or hang up the calls) first\n",
+			active);
+		return SWITCH_STATUS_FALSE;
+	}
 	aws_transcribe_cleanup();
 	switch_event_free_subclass(TRANSCRIBE_EVENT_RESULTS);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_END_OF_TRANSCRIPT);

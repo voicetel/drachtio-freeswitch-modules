@@ -11,5 +11,7 @@ switch_status_t aws_transcribe_session_stop(switch_core_session_t *session, int 
    (e.g. switch_core_media_bug_add failed). Stops+joins the thread and frees. */
 void aws_transcribe_session_cleanup(void *pUserData);
 switch_bool_t aws_transcribe_frame(switch_media_bug_t *bug, void* user_data);
+/* live transcription session count; > 0 means unload must be refused */
+int aws_transcribe_active_sessions();
 
 #endif

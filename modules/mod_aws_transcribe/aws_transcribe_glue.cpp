@@ -59,6 +59,11 @@ private:
 	switch_core_session_t* m_session;
 };
 
+/* number of live GStreamer instances; lets the module shutdown refuse
+   unload while transcription sessions are active, so Aws::ShutdownAPI
+   never runs the SDK's global teardown under live clients */
+static std::atomic<int> g_activeStreamers{0};
+
 class GStreamer {
 public:
 	GStreamer(
@@ -78,6 +83,7 @@ public:
 			/* prebuffer up to 15 chunks (CHUNKSIZE bytes for 8kHz, 2x for resampled 16kHz) until the stream is connected */
 			m_prebufChunkSize(CHUNKSIZE * (samples_per_second == 8000 ? 1 : 2)),
 			m_audioBuffer(CHUNKSIZE * (samples_per_second == 8000 ? 1 : 2), 15) {
+		g_activeStreamers++;
 		/* allow operators to tune the back-pressure buffer cap via env var */
 		const char* maxFramesEnv = std::getenv("AWS_TRANSCRIBE_MAX_BUFFERED_FRAMES");
 		if (maxFramesEnv != nullptr) {
@@ -247,7 +253,8 @@ public:
 
 
 	~GStreamer() {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::~GStreamer wrote %u packets %p\n", m_packets, this);		
+		g_activeStreamers--;
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::~GStreamer wrote %u packets %p\n", m_packets, this);
 	}
 
 	bool write(void* data, uint32_t datalen) {
@@ -582,6 +589,10 @@ extern "C" {
     Aws::ShutdownAPI(options);
 
 		return SWITCH_STATUS_SUCCESS;
+	}
+
+	int aws_transcribe_active_sessions() {
+		return g_activeStreamers.load();
 	}
 
 	// start transcribe on a channel
