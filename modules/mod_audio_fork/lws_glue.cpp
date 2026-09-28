@@ -565,7 +565,8 @@ extern "C" {
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "(%u) fork_session_cleanup\n", id);
 
     AudioPipe *pAudioPipe = static_cast<AudioPipe *>(tech_pvt->pAudioPipe);
-      
+    switch_media_bug_t *bug_to_remove = NULL;
+
     switch_mutex_lock(tech_pvt->mutex);
 
     // get the bug again, now that we are under lock
@@ -573,9 +574,7 @@ extern "C" {
       switch_media_bug_t *bug = (switch_media_bug_t*) switch_channel_get_private(channel, bugname);
       if (bug) {
         switch_channel_set_private(channel, bugname, NULL);
-        if (!channelIsClosing) {
-          switch_core_media_bug_remove(session, &bug);
-        }
+        bug_to_remove = bug;
       }
     }
 
@@ -590,13 +589,30 @@ extern "C" {
     }
 
     if (pAudioPipe && text) pAudioPipe->bufferForSending(text);
-    // The media bug has been removed above, so fork_frame can no longer run.
     // Hand the pipe to the reaper, which closes it, waits for the socket to
     // actually close, then deletes it — no in-callback delete, no use-after-free.
+    // The bug itself is removed below, after the unlock; until then fork_frame
+    // can still fire but no-ops on the NULL pAudioPipe the reaper leaves behind.
     if (pAudioPipe) reaper(tech_pvt);
 
     destroy_tech_pvt(tech_pvt);
     switch_mutex_unlock(tech_pvt->mutex);
+
+    /* switch_core_media_bug_remove must NOT be called with tech_pvt->mutex
+       held: FS core's remove acquires session->bug_rwlock in write mode, while
+       the hangup path (switch_core_media_bug_remove_all) holds that same write
+       lock across this module's CLOSE callback, which acquires
+       tech_pvt->mutex. Holding our mutex across remove is an ABBA deadlock
+       (mutex -> bug_rwlock here, bug_rwlock -> mutex on hangup) on a
+       stop-vs-hangup race -- a permanent wedge of both threads. Removing after
+       the unlock is safe: the private is already cleared and the pipe already
+       handed to the reaper, so fork_frame no-ops and the CLOSE that remove
+       fires synchronously early-returns on the cleared private. If the hangup
+       path already removed/closed the bug, our remove is a harmless not-found
+       walk (bug structs are session-pool memory, pinned by our read lock). */
+    if (!channelIsClosing && bug_to_remove) {
+      switch_core_media_bug_remove(session, &bug_to_remove);
+    }
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "(%u) fork_session_cleanup: connection closed\n", id);
     return SWITCH_STATUS_SUCCESS;
   }
