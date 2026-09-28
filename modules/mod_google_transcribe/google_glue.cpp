@@ -955,7 +955,6 @@ extern "C" {
                    out[] holds SWITCH_RECOMMENDED_BUFFER_SIZE elements total */
                 spx_uint32_t out_len = SWITCH_RECOMMENDED_BUFFER_SIZE / cb->channels;
                 spx_uint32_t in_len = pcm_len / sizeof(spx_int16_t) / cb->channels;
-                size_t written;
 
                 speex_resampler_process_interleaved_int(cb->resampler,
                   (const spx_int16_t *) pcm,
