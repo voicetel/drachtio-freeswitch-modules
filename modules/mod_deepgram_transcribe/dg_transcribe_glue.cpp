@@ -46,7 +46,6 @@ namespace {
     MutexUnlockGuard& operator=(const MutexUnlockGuard&) = delete;
   };
 
-  static bool hasDefaultCredentials = false;
   static const char* defaultApiKey = nullptr;
   static const char *requestedBufferSecs = std::getenv("MOD_AUDIO_FORK_BUFFER_SECS");
   static int nAudioBufferSecs = std::max(1, std::min(requestedBufferSecs ? ::atoi(requestedBufferSecs) : 2, 5));
@@ -512,7 +511,6 @@ extern "C" {
 				"\"DEEPGRAM_API_KEY\" env var not set; authentication will expect channel variables of same names to be set\n");
 		}
 		else {
-			hasDefaultCredentials = true;
       defaultApiKey = apiKey;
 		}
 		return SWITCH_STATUS_SUCCESS;
