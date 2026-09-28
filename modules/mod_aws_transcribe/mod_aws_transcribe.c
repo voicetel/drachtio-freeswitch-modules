@@ -243,33 +243,34 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_aws_transcribe_load)
 {
 	switch_api_interface_t *api_interface;
 
-	/* create/register custom event message types */
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_RESULTS) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_RESULTS);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_END_OF_TRANSCRIPT) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_END_OF_TRANSCRIPT);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_NO_AUDIO_DETECTED) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_VAD_DETECTED) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_VAD_DETECTED);
-		return SWITCH_STATUS_TERM;
-	}
-	/* NB: the subclass NAME (inherited jambonz_transcribe::error) is frozen --
-	   external consumers key on it; this only adds the missing reservation the
-	   other five subclasses already had */
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_ERROR) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_ERROR);
-		return SWITCH_STATUS_TERM;
+	/* create/register custom event message types.
+	   NB: the ERROR subclass NAME (inherited jambonz_transcribe::error) is frozen --
+	   external consumers key on it. */
+	{
+		static const char* subclasses[] = {
+			TRANSCRIBE_EVENT_RESULTS,
+			TRANSCRIBE_EVENT_END_OF_TRANSCRIPT,
+			TRANSCRIBE_EVENT_NO_AUDIO_DETECTED,
+			TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED,
+			TRANSCRIBE_EVENT_VAD_DETECTED,
+			/* the error name is frozen (consumers key on it); this only adds the
+			   missing reservation the other five subclasses already had */
+			TRANSCRIBE_EVENT_ERROR
+		};
+		size_t i;
+		for (i = 0; i < sizeof(subclasses) / sizeof(subclasses[0]); i++) {
+			if (switch_event_reserve_subclass(subclasses[i]) != SWITCH_STATUS_SUCCESS) {
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", subclasses[i]);
+				/* FreeSWITCH does not call the shutdown hook for a failed load:
+				   anything already reserved stays reserved for the life of the
+				   process, and every subsequent 'load mod_aws_transcribe' fails at
+				   this same spot until FS restarts. Release what we took. */
+				while (i-- > 0) {
+					switch_event_free_subclass(subclasses[i]);
+				}
+				return SWITCH_STATUS_TERM;
+			}
+		}
 	}
 
 	/* connect my internal structure to the blank pointer passed to me */
