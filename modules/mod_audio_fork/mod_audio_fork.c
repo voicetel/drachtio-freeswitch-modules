@@ -102,6 +102,13 @@ static switch_status_t start_capture(switch_core_session_t *session,
 		return SWITCH_STATUS_FALSE;
 	}
 	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "adding bug %s.\n", bugname);
+	/* the get_private check above is check-then-act: two concurrent starts with
+	   the same bugname both pass it, attach two bugs, and the second
+	   set_private wins -- at hangup the first bug's CLOSE then cleans up the
+	   SECOND bug's tech_pvt and the first pipe is never reaped (leaked
+	   AudioPipe + open connection). Let FS core reject the duplicate name
+	   instead; the failure path below already tears the loser down. */
+	flags |= SMBF_ONE_ONLY;
 	if ((status = switch_core_media_bug_add(session, bugname, NULL, capture_callback, pUserData, 0, flags, &bug)) != SWITCH_STATUS_SUCCESS) {
 		/* the AudioPipe was already created by fork_session_init; without this
 		   teardown it (and its heap audio buffer) would leak permanently */
