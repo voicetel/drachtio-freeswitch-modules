@@ -466,7 +466,18 @@ void AudioPipe::addPendingConnect(AudioPipe* ap) {
   lws_cancel_service(ctx);
 }
 void AudioPipe::addPendingDisconnect(AudioPipe* ap) {
-  ap->m_state = LWS_CLIENT_DISCONNECTING;
+  /* Only a CONNECTED pipe may enter DISCONNECTING. The store used to be
+     unconditional, so a close() racing a far-end drop overwrote the
+     DISCONNECTED that CLIENT_CLOSED had just set (after lws freed the wsi);
+     processPendingDisconnects' state gate then passed and it called
+     lws_callback_on_writable on the freed wsi. The CAS makes only the
+     CONNECTED->DISCONNECTING transition win; a pipe already terminal
+     (DISCONNECTED/FAILED) has nothing left to disconnect. This mirrors the
+     m_state == LWS_CLIENT_CONNECTED gate processPendingWrites already has. */
+  LwsState_t expected = LWS_CLIENT_CONNECTED;
+  if (!ap->m_state.compare_exchange_strong(expected, LWS_CLIENT_DISCONNECTING)) {
+    return;
+  }
   {
     std::lock_guard<std::mutex> guard(mutex_disconnects);
     pendingDisconnects.push_back(ap);

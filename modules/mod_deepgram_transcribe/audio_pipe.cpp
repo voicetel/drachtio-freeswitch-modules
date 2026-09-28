@@ -444,7 +444,15 @@ void AudioPipe::addPendingConnect(AudioPipe* ap) {
   lws_cancel_service(ctx);
 }
 void AudioPipe::addPendingDisconnect(AudioPipe* ap) {
-  ap->m_state = LWS_CLIENT_DISCONNECTING;
+  /* Only a CONNECTED pipe may enter DISCONNECTING; see the audio_fork copy
+     for the full rationale (close() racing a far-end drop previously
+     overwrote DISCONNECTED and lws_callback_on_writable'd a freed wsi).
+     Nothing calls close() in this module today, but the copies stay
+     aligned. */
+  LwsState_t expected = LWS_CLIENT_CONNECTED;
+  if (!ap->m_state.compare_exchange_strong(expected, LWS_CLIENT_DISCONNECTING)) {
+    return;
+  }
   {
     std::lock_guard<std::mutex> guard(mutex_disconnects);
     pendingDisconnects.push_back(ap);
