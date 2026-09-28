@@ -724,6 +724,15 @@ extern "C" {
 
 			// close connection and get final responses
 			switch_mutex_lock(cb->mutex);
+			/* A concurrent second stop (API stop racing the hangup CLOSE
+			   callback) can fetch the same bug before either clears the private
+			   and then run this whole teardown twice -- the loser ending in
+			   switch_core_media_bug_remove on the freed bug. Re-verify under the
+			   lock; the loser has nothing left to do. */
+			if (switch_channel_get_private(channel, bugname) != bug) {
+				switch_mutex_unlock(cb->mutex);
+				return SWITCH_STATUS_SUCCESS;
+			}
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "azure_transcribe_session_stop: locked session\n");
 
 			switch_channel_set_private(channel, bugname, NULL);
@@ -740,6 +749,25 @@ extern "C" {
 
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "%s Bug is not attached.\n", switch_channel_get_name(channel));
 		return SWITCH_STATUS_FALSE;
+	}
+
+	switch_status_t azure_transcribe_session_close(struct cap_cb *cb) {
+		/* Teardown for a media bug's own CLOSE callback: operates on THIS bug's
+		   cap_cb instead of re-resolving by bugname through the channel-private.
+		   Two concurrent same-bugname starts both pass the get_private check
+		   before either stores its bug; the second set_private overwrites the
+		   first, so a name-based stop (as CLOSE previously used) resolves to the
+		   second bug from BOTH CLOSE callbacks -- the first cb's recognizer is
+		   orphaned (never finished or deleted) and keeps firing events, while
+		   the second gets torn down twice. Stopping the cb that this bug's
+		   user_data names reaps each recognizer exactly once. */
+		if (!cb) return SWITCH_STATUS_FALSE;
+		switch_mutex_lock(cb->mutex);
+		GStreamer* streamer = (GStreamer *) cb->streamer;
+		if (streamer) reaper(cb);
+		killcb(cb);
+		switch_mutex_unlock(cb->mutex);
+		return SWITCH_STATUS_SUCCESS;
 	}
 	
 	switch_bool_t azure_transcribe_frame(switch_media_bug_t *bug, void* user_data) {

@@ -47,7 +47,9 @@ static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, 
 			struct cap_cb* cb = (struct cap_cb*) switch_core_media_bug_get_user_data(bug);
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Got SWITCH_ABC_TYPE_CLOSE.\n");
 
-			azure_transcribe_session_stop(session, 1, cb->bugname);
+			/* stop THIS bug's recognizer, not whatever the (possibly
+			   overwritten) channel-private resolves to by name */
+			azure_transcribe_session_close(cb);
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Finished SWITCH_ABC_TYPE_CLOSE.\n");
 		}
 		break;
