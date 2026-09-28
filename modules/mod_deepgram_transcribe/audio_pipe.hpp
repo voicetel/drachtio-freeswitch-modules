@@ -100,14 +100,12 @@ private:
      atomic slots give those cross-thread accesses a happens-before edge */
   static std::atomic<struct lws_context*> contexts[];
   static unsigned int numContexts;
-  static std::string protocolName;
   static std::mutex mutex_connects;
   static std::mutex mutex_disconnects;
   static std::mutex mutex_writes;
   static std::list<AudioPipe*> pendingConnects;
   static std::list<AudioPipe*> pendingDisconnects;
   static std::list<AudioPipe*> pendingWrites;
-  static log_emit_function logger;
 
   /* shutdown coordination: deinitialize() sets stopRequested, wakes each lws
      context, and JOINs the (non-detached) service threads before destroying the
@@ -140,7 +138,6 @@ private:
   std::string m_metadata;
   std::mutex m_text_mutex;
   std::mutex m_audio_mutex;
-  int m_sslFlags;
   struct lws *m_wsi;
   uint8_t *m_audio_buffer;
   size_t m_audio_buffer_max_len;
@@ -155,7 +152,6 @@ private:
   bool m_recv_buf_discarding;
   struct lws_per_vhost_data* m_vhd;
   notifyHandler_t m_callback;
-  log_emit_function m_logger;
   std::string m_apiKey;
   /* cross-thread flags (written by reaper/finish, read by lws callbacks) */
   std::atomic<bool> m_gracefulShutdown;

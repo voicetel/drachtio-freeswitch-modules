@@ -16,7 +16,6 @@
 #include <unordered_map>
 
 #include "mod_deepgram_transcribe.h"
-#include "simple_buffer.h"
 #include "parser.hpp"
 #include "audio_pipe.hpp"
 
@@ -591,7 +590,6 @@ extern "C" {
 	switch_bool_t dg_transcribe_frame(switch_core_session_t *session, switch_media_bug_t *bug) {
     private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
     size_t inuse = 0;
-    bool dirty = false;
     char *p = (char *) "{\"msg\": \"buffer overrun\"}";
 
     if (!tech_pvt) return SWITCH_TRUE;
@@ -635,7 +633,6 @@ extern "C" {
             pAudioPipe->binaryWritePtrAdd(frame.datalen);
             frame.buflen = available = pAudioPipe->binarySpaceAvailable();
             frame.data = pAudioPipe->binaryWritePtr();
-            dirty = true;
           }
         }
       }
@@ -666,7 +663,6 @@ extern "C" {
               size_t bytes_written = out_len * 2 * tech_pvt->channels;
               pAudioPipe->binaryWritePtrAdd(bytes_written);
               available = pAudioPipe->binarySpaceAvailable();
-              dirty = true;
             }
             if (available < pAudioPipe->binaryMinSpace()) {
               if (!tech_pvt->buffer_overrun_notified) {

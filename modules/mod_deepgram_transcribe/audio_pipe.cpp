@@ -304,14 +304,12 @@ std::atomic<struct lws_context*> AudioPipe::contexts[] = {
 };
 unsigned int AudioPipe::numContexts = 0;
 std::atomic<unsigned int> AudioPipe::nchild{0};
-std::string AudioPipe::protocolName;
 std::mutex AudioPipe::mutex_connects;
 std::mutex AudioPipe::mutex_disconnects;
 std::mutex AudioPipe::mutex_writes;
 std::list<AudioPipe*> AudioPipe::pendingConnects;
 std::list<AudioPipe*> AudioPipe::pendingDisconnects;
 std::list<AudioPipe*> AudioPipe::pendingWrites;
-AudioPipe::log_emit_function AudioPipe::logger;
 std::atomic<bool> AudioPipe::stopRequested{false};
 std::vector<std::thread> AudioPipe::serviceThreads;
 
