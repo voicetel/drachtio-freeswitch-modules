@@ -43,8 +43,6 @@ using namespace Aws::TranscribeStreamingService::Model;
 
 const char ALLOC_TAG[] = "drachtio";
 
-static bool hasDefaultCredentials = false;
-
 /* RAII wrapper around switch_core_session_locate/switch_core_session_rwunlock so the
    read-lock is always released on every exit path (early return, exception, scope end). */
 class SessionLock {
@@ -100,7 +98,7 @@ public:
 		for (int i = 4; i < 20; i++) keySnippet[i] = 'x';
 		keySnippet[19] = '\0';
 
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p ACCESS_KEY_ID %s, region %s\n", this, keySnippet, region);		
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p ACCESS_KEY_ID %s, region %s\n", this, keySnippet, region ? region : "(SDK default)");
 		if (*awsAccessKeyId && *awsSecretAccessKey) {
 			m_client = Aws::MakeUnique<TranscribeStreamingServiceClient>(ALLOC_TAG, AWSCredentials(awsAccessKeyId, awsSecretAccessKey), config);
 		}
@@ -594,10 +592,6 @@ extern "C" {
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, 
 				"\"AWS_ACCESS_KEY_ID\"  and/or \"AWS_SECRET_ACCESS_KEY\" env var not set; authentication will expect channel variables of same names to be set\n");
 		}
-		else {
-			hasDefaultCredentials = true;
-
-		}
     Aws::SDKOptions options;
 /*		
     options.loggingOptions.logLevel = Aws::Utils::Logging::LogLevel::Trace;
@@ -645,7 +639,10 @@ extern "C" {
 		uint32_t sampleRate = read_codec->implementation->actual_samples_per_second;
 
 		struct cap_cb* cb = (struct cap_cb *) switch_core_session_alloc(session, sizeof(*cb));
-		memset(cb, 0, sizeof(*cb));
+		/* no memset here: switch_core_session_alloc already zeroes pool memory,
+		   and memset over the std::atomic members of cap_cb's C++ view is
+		   formally undefined (benign for lock-free atomics, but pointless
+		   when the allocation is already zeroed) */
 		const char* awsAccessKeyId = switch_channel_get_variable(channel, "AWS_ACCESS_KEY_ID");
 		const char* awsSecretAccessKey = switch_channel_get_variable(channel, "AWS_SECRET_ACCESS_KEY");
 		const char* awsRegion = switch_channel_get_variable(channel, "AWS_REGION");
@@ -698,7 +695,7 @@ extern "C" {
 		strncpy(cb->lang, lang, MAX_LANG);
 		cb->lang[MAX_LANG-1] = '\0';
 		cb->samples_per_second = sampleRate;
-		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "sample rate of rtp stream is %d\n", samples_per_second);
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "sample rate of rtp stream is %d\n", cb->samples_per_second);
 		if (sampleRate != 8000) {
 			/* channels, not 1: stereo capture (SMBF_STEREO) delivers interleaved
 			   2-channel frames and the frame path uses the interleaved API */
