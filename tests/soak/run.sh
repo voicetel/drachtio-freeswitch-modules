@@ -10,6 +10,12 @@ run_one() {
   WS_PORT=9000 python3 ws_mock.py 9000 >/tmp/ws9000.log 2>&1 &  W1=$!
   WS_DROP_AFTER=0.3 WS_PORT=9001 python3 ws_mock.py 9001 >/tmp/ws9001.log 2>&1 & W2=$!
   sleep 1
+  # WS_OVERSIZED_EVERY: the mocks also send fragmented + >650KB inbound
+  # messages, exercising the recv reassembly and oversized-discard paths
+  # (regression coverage for the c31364f class)
+  WS_OVERSIZED_EVERY="${WS_OVERSIZED_EVERY:-500}" WS_PORT=9000 python3 ws_mock.py 9000 >/tmp/ws9000.log 2>&1 &  W1=$!
+  WS_OVERSIZED_EVERY="${WS_OVERSIZED_EVERY:-500}" WS_DROP_AFTER=0.3 WS_PORT=9001 python3 ws_mock.py 9001 >/tmp/ws9001.log 2>&1 & W2=$!
+  sleep 1
   ITER="${ITER:-200}" WORKERS="${WORKERS:-4}" WS_PORT=9000 WS_DROP_PORT=9001 setarch -R ./"$bin"
   local r=$?
   kill $W1 $W2 2>/dev/null; wait $W1 $W2 2>/dev/null

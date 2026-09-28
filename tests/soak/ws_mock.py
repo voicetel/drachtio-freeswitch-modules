@@ -12,6 +12,12 @@ except Exception as e:
 
 PORT = int(os.environ.get("WS_PORT", sys.argv[1] if len(sys.argv) > 1 else "9000"))
 DROP_AFTER = float(os.environ.get("WS_DROP_AFTER", "0"))  # 0 = never drop
+# every N received frames, also send a fragmented message and an oversized
+# one (0 = disabled). Exercises the module's inbound paths that plain small
+# messages never reach: fragment reassembly, the >650KB MAX_RECV_BUF_SIZE
+# discard path, and its truncated-tail handling (regression coverage for
+# the c31364f class).
+OVERSIZED_EVERY = int(os.environ.get("WS_OVERSIZED_EVERY", "0"))
 
 async def handler(*args):
     ws = args[0]
@@ -31,6 +37,21 @@ async def handler(*args):
                     await ws.send('{"type":"transcription","data":{"is_final":false,"text":"soak"}}')
                 except Exception:
                     break
+            if OVERSIZED_EVERY > 0 and n % OVERSIZED_EVERY == 0:
+                # 1) a deliberately fragmented valid message: sending an iterable
+                #    makes the library emit continuation frames, exercising the
+                #    recv-buffer reassembly path
+                try:
+                    await ws.send(['{"type":"transcription","data":{"is_final":false,',
+                                   '"text":"fragmented soak"}}'])
+                except Exception:
+                    pass
+                # 2) an oversized message (> the module's 650KB MAX_RECV_BUF_SIZE):
+                #    exercises the max-buffer-exceeded discard path
+                try:
+                    await ws.send('{"type":"transcription","data":"' + 'x' * (700 * 1024) + '"}')
+                except Exception:
+                    pass
     except Exception:
         pass
 
