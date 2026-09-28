@@ -94,6 +94,9 @@ static switch_status_t start_capture(switch_core_session_t *session,
 	}
 	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "adding bug %s.\n", bugname);
 	if ((status = switch_core_media_bug_add(session, bugname, NULL, capture_callback, pUserData, 0, flags, &bug)) != SWITCH_STATUS_SUCCESS) {
+		/* the AudioPipe was already created by fork_session_init; without this
+		   teardown it (and its heap audio buffer) would leak permanently */
+		fork_session_cleanup_unattached(pUserData);
 		return status;
 	}
 	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "setting bug private data %s.\n", bugname);

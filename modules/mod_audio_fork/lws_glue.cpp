@@ -519,6 +519,21 @@ extern "C" {
     return SWITCH_STATUS_SUCCESS;
   }
 
+  void fork_session_cleanup_unattached(void *pUserData) {
+    private_t* tech_pvt = (private_t*) pUserData;
+    if (!tech_pvt) return;
+    switch_log_printf(SWITCH_CHANNEL_UUID_LOG(tech_pvt->sessionId), SWITCH_LOG_WARNING,
+      "fork_session_cleanup_unattached: tearing down orphaned tech_pvt (media bug never attached)\n");
+    switch_mutex_lock(tech_pvt->mutex);
+    /* audio_fork connects only after the bug is attached (fork_session_connect
+       in start_capture), so an unattached tech_pvt's AudioPipe was never
+       connected and no lws thread can be touching it: destroy_tech_pvt can
+       delete it directly, no reaper needed. Port of deepgram's
+       dg_transcribe_session_cleanup (9e4ffce). */
+    destroy_tech_pvt(tech_pvt);
+    switch_mutex_unlock(tech_pvt->mutex);
+  }
+
   switch_status_t fork_session_cleanup(switch_core_session_t *session, char *bugname, char* text, int channelIsClosing) {
     switch_channel_t *channel = switch_core_session_get_channel(session);
     switch_media_bug_t *bug = (switch_media_bug_t*) switch_channel_get_private(channel, bugname);

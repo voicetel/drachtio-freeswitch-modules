@@ -17,4 +17,7 @@ switch_status_t fork_session_send_text(switch_core_session_t *session, char *bug
 switch_bool_t fork_frame(switch_core_session_t *session, switch_media_bug_t *bug);
 switch_status_t fork_service_threads();
 switch_status_t fork_session_connect(void **ppUserData);
+/* tear down a tech_pvt whose media bug was never attached (bug-add failure):
+   no bug exists to look up, so operate on the user data directly */
+void fork_session_cleanup_unattached(void *pUserData);
 #endif
