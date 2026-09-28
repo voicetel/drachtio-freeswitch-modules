@@ -210,9 +210,26 @@ namespace {
       }
     }
     else {
-      if (tier) oss << "tier=" << tier;
-      if (model) oss << "&model=" << model;
-      if (customModel) oss << "&model=" << customModel;
+      /* Correct separators and exactly one model param: previously a set
+         model/customModel with no tier produced "?&model=..." (leading '&'
+         right after the '?'), and setting both DEEPGRAM_SPEECH_MODEL and
+         DEEPGRAM_SPEECH_CUSTOM_MODEL emitted the model= key twice with
+         whichever the server parsed last silently winning. An explicit
+         custom model overrides the generic model. */
+      bool first = true;
+      if (tier) {
+        oss << "tier=" << tier;
+        first = false;
+      }
+      if (model && customModel) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+          "both DEEPGRAM_SPEECH_MODEL (%s) and DEEPGRAM_SPEECH_CUSTOM_MODEL (%s) set; using the custom model\n",
+          model, customModel);
+      }
+      const char* chosenModel = customModel ? customModel : model;
+      if (chosenModel) {
+        oss << (first ? "" : "&") << "model=" << chosenModel;
+      }
     }
 
     if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_MODEL_VERSION"))) {
