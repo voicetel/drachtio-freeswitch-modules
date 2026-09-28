@@ -88,7 +88,14 @@ public:
 
 		auto sourceLanguageConfig = SourceLanguageConfig::FromLanguage(lang);
 		auto format = AudioStreamFormat::GetWaveFormatPCM(8000, 16, channels);
-		auto options = AudioProcessingOptions::Create(AUDIO_INPUT_PROCESSING_ENABLE_DEFAULT);
+		/* NB: no AudioProcessingOptions here. An earlier revision created
+		   AudioProcessingOptions::Create(AUDIO_INPUT_PROCESSING_ENABLE_DEFAULT)
+		   but never passed it to FromConfig -- a silent no-op either way.
+		   Deliberately NOT wiring it in now: enabling the SDK's default audio
+		   processing (echo cancellation / noise suppression) on already-clean
+		   telephony audio is a consumer-visible behavior change that needs a
+		   live-credential soak first; reintroduce it as an opt-in channel
+		   variable if wanted. */
 		/* SPXSTRING is std::string: constructing it from a NULL const char* is
 		   undefined behavior (strlen on nullptr inside libstdc++). Treat
 		   NULL/empty uniformly and fail a keyless, endpointless start with a
