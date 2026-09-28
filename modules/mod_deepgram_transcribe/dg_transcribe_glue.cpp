@@ -582,6 +582,17 @@ extern "C" {
       
     // close connection and get final responses
     switch_mutex_lock(tech_pvt->mutex);
+    /* Re-verify under the lock that this bug still owns the private slot: a
+       concurrent second stop (or a stop racing a stop+start) fetched the same
+       bug before the first cleared the slot, and without this check it would
+       clear whatever the slot holds NOW -- possibly the NEW session's bug --
+       and run the teardown a second time. aws/azure already do this. */
+    if (switch_channel_get_private(channel, MY_BUG_NAME) != bug) {
+      switch_mutex_unlock(tech_pvt->mutex);
+      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
+        "(%u) dg_transcribe_session_stop: already stopped\n", id);
+      return SWITCH_STATUS_SUCCESS;
+    }
     /* the bug is stored under the fixed MY_BUG_NAME key (start_capture), and
        that is also the key this function looked it up under above -- clearing
        the caller-supplied bugname instead left a stale bug pointer under
