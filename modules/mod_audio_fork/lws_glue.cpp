@@ -350,10 +350,13 @@ namespace {
       speex_resampler_destroy(tech_pvt->resampler);
       tech_pvt->resampler = nullptr;
     }
-    if (tech_pvt->mutex) {
-      switch_mutex_destroy(tech_pvt->mutex);
-      tech_pvt->mutex = nullptr;
-    }
+    /* NB: tech_pvt->mutex was created from the session pool
+     * (switch_core_session_get_pool); it is owned by the pool and freed when
+     * the pool is destroyed. Do NOT switch_mutex_destroy() it here — callers
+     * invoke this while the mutex is held, and the lws service thread may be
+     * blocked on it (playout append); destroying a locked mutex with waiters
+     * is UB (crash or a permanently frozen service thread stalling every
+     * audio_fork session). */
   }
 
   void lws_logger(int level, const char *line) {
@@ -549,6 +552,7 @@ extern "C" {
     if (pAudioPipe) reaper(tech_pvt);
 
     destroy_tech_pvt(tech_pvt);
+    switch_mutex_unlock(tech_pvt->mutex);
     switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "(%u) fork_session_cleanup: connection closed\n", id);
     return SWITCH_STATUS_SUCCESS;
   }
