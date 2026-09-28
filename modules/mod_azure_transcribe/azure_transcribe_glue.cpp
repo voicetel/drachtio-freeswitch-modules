@@ -42,7 +42,6 @@ private:
 	switch_core_session_t* m_session;
 };
 
-static bool hasDefaultCredentials = false;
 /* process-global one-shot: the SDK log filename is applied by the first
    recognizer constructed; std::call_once makes the flip race-free across
    concurrently constructed sessions */
@@ -71,7 +70,7 @@ public:
 		const char* region, 
 		const char* subscriptionKey, 
 		responseHandler_t responseHandler
-  ) : m_sessionId(sessionId), m_bugname(bugname), m_finished(false), m_stopped(false), m_interim(interim),
+  ) : m_sessionId(sessionId), m_bugname(bugname), m_finished(false),
 	 m_connected(false), m_connecting(false), m_canceled(false), m_audioBuffer(CHUNKSIZE, 15),
 	m_responseHandler(responseHandler) {
 
@@ -92,7 +91,6 @@ public:
 		const char* endpoint = switch_channel_get_variable(channel, "AZURE_SERVICE_ENDPOINT");
 		const char* endpointId = switch_channel_get_variable(channel, "AZURE_SERVICE_ENDPOINT_ID");
 
-		auto sourceLanguageConfig = SourceLanguageConfig::FromLanguage(lang);
 		auto format = AudioStreamFormat::GetWaveFormatPCM(8000, 16, channels);
 		/* NB: no AudioProcessingOptions here. An earlier revision created
 		   AudioProcessingOptions::Create(AUDIO_INPUT_PROCESSING_ENABLE_DEFAULT)
@@ -223,9 +221,7 @@ public:
 		auto onSessionStopped = [this, responseHandler](const SessionEventArgs& args) {
 			if (m_finished) return;
 			SessionLock lock(m_sessionId.c_str());
-			m_stopped = true;
 			if (lock) {
-				auto sessionId = args.SessionId;
 				/* m_finished is false, so this stop was NOT initiated by us: azure
 				   ended the session unilaterally (silence timeout, service stop).
 				   Previously only a DEBUG log -- the external consumer could not
@@ -234,8 +230,8 @@ public:
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "GStreamer: azure session stopped unexpectedly (not initiated by us)\n");
 				if (!m_canceled) {
 					/* terminal from the consumer's perspective: this stop was not
-					   ours, every remaining handler now gates on m_finished (never
-					   set on this path) or m_stopped, so no event with
+					   ours, every remaining handler gates on m_finished (never
+					   set on this path), so no event with
 					   transcription-session-finished=true can ever follow. Emit the
 					   error with finished=true so the consumer knows the
 					   transcription session is over. */
@@ -249,7 +245,6 @@ public:
 			if (m_finished) return;
 			switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
 			if (psession) {
-				auto sessionId = args.SessionId;
 				responseHandler(psession, TRANSCRIBE_EVENT_START_OF_UTTERANCE, NULL, m_bugname.c_str(), m_finished);
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer start of speech\n");
 				switch_core_session_rwunlock(psession);
@@ -259,7 +254,6 @@ public:
 			if (m_finished) return;
 			switch_core_session_t* psession = switch_core_session_locate(m_sessionId.c_str());
 			if (psession) {
-				auto sessionId = args.SessionId;
 				responseHandler(psession, TRANSCRIBE_EVENT_END_OF_UTTERANCE, NULL, m_bugname.c_str(), m_finished);
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer end of speech\n");
 				switch_core_session_rwunlock(psession);
@@ -349,7 +343,6 @@ public:
 			if (m_finished) return;
 			SessionLock lock(m_sessionId.c_str());
 			if (lock) {
-				auto sessionId = args.SessionId;
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer got session started from microsoft\n");
 
 				/* Drain the prebuffer and only THEN publish m_connected, all under
@@ -488,10 +481,6 @@ public:
 		}
 	}
 
-	bool isStopped() {
-		return m_stopped;
-	}
-
 	/* surface a push-stream write failure as an error event: streaming has
 	   stopped for good (m_finished is set) and without an event the external
 	   consumer cannot distinguish the dead stream from silence */
@@ -516,17 +505,14 @@ public:
 private:
 	std::string m_sessionId;
 	std::string m_bugname;
-	std::string  m_region;
 	std::shared_ptr<SpeechRecognizer> m_recognizer;
 	std::shared_ptr<PushAudioInputStream> m_pushStream;
 
 	responseHandler_t m_responseHandler;
-	bool m_interim;
 	/* written from SDK callback threads, read from the media thread */
 	std::atomic<bool> m_finished;
 	std::atomic<bool> m_connected;
 	std::atomic<bool> m_connecting;
-	std::atomic<bool> m_stopped;
 	std::atomic<bool> m_canceled;
 	/* guards m_audioBuffer only. The media thread (write() -> add()) and the SDK
 	   SessionStarted callback thread (drain via getNumItems()/getNextChunk())
@@ -584,9 +570,6 @@ extern "C" {
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, 
 				"\"AZURE_SUBSCRIPTION_KEY\"  env var not set; authentication will expect channel variables of same names to be set\n");
 		}
-		else {
-			hasDefaultCredentials = true;
-		}
 		return SWITCH_STATUS_SUCCESS;
 	}
 	
@@ -616,7 +599,6 @@ extern "C" {
 		switch_status_t status = SWITCH_STATUS_SUCCESS;
 		switch_channel_t *channel = switch_core_session_get_channel(session);
 		int err;
-		switch_threadattr_t *thd_attr = NULL;
 		switch_memory_pool_t *pool = switch_core_session_get_pool(session);
 		auto read_codec = switch_core_session_get_read_codec(session);
 		uint32_t sampleRate = read_codec->implementation->actual_samples_per_second;
@@ -626,8 +608,6 @@ extern "C" {
 		const char* subscriptionKey = switch_channel_get_variable(channel, "AZURE_SUBSCRIPTION_KEY");
 		const char* region = switch_channel_get_variable(channel, "AZURE_REGION");
 		cb->channels = channels;
-		strncpy(cb->sessionId, sessionId, MAX_SESSION_ID);
-		cb->sessionId[MAX_SESSION_ID-1] = '\0';
 		strncpy(cb->bugname, bugname, MAX_BUG_LEN);
 		cb->bugname[MAX_BUG_LEN-1] = '\0';
 
@@ -658,8 +638,6 @@ extern "C" {
 		}
 
 		cb->interim = interim;
-		strncpy(cb->lang, lang, MAX_LANG);
-		cb->lang[MAX_LANG-1] = '\0';
 
 		/* determine if we need to resample the audio to 16-bit 8khz */
 		if (sampleRate != 8000) {
