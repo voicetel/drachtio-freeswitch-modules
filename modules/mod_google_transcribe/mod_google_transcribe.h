@@ -87,6 +87,10 @@ struct cap_cb {
 	uint32_t dbg_samples;
 	int32_t dbg_peak[2];
 	uint8_t dbg_audio_levels;
+	/* set for the `write` capture: a two-channel (read-driven) bug whose
+	 * second channel, the audio the channel sends, is recognized alone as
+	 * a mono stream; the first channel is discarded */
+	int write_only;
 };
 #endif
 

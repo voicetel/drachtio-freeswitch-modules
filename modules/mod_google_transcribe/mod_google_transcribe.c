@@ -227,7 +227,7 @@ static switch_status_t start_capture2(switch_core_session_t *session, switch_med
 }
 
 static switch_status_t start_capture(switch_core_session_t *session, switch_media_bug_flag_t flags, 
-  char* lang, int interim, char* bugname)
+  char* lang, int interim, char* bugname, int write_only)
 {
 	switch_channel_t *channel = switch_core_session_get_channel(session);
 	switch_media_bug_t *bug;
@@ -306,11 +306,15 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 
 	samples_per_second = !strcasecmp(read_impl.iananame, "g722") ? read_impl.actual_samples_per_second : read_impl.samples_per_second;
 
-	if (SWITCH_STATUS_FALSE == google_speech_session_init(session, responseHandler, DEFAULT_SAMPLE_RATE, samples_per_second, flags & SMBF_STEREO ? 2 : 1, lang, interim, bugname, single_utterance,
+	/* the write capture reads both directions but sends Google only the
+	   second channel, so the recognizer is configured for one channel */
+	if (SWITCH_STATUS_FALSE == google_speech_session_init(session, responseHandler, DEFAULT_SAMPLE_RATE, samples_per_second, (flags & SMBF_STEREO) && !write_only ? 2 : 1, lang, interim, bugname, single_utterance,
 	 separate_recognition, max_alternatives, profanity_filter, word_time_offset, punctuation, model, enhanced, hints, NULL, &pUserData)) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Error initializing google speech session.\n");
 		return SWITCH_STATUS_FALSE;
 	}
+	/* set before the bug is added, so before any frame reaches the callback */
+	((struct cap_cb *) pUserData)->write_only = write_only;
 
 	if ((status = switch_core_media_bug_add(session, bugname, NULL, capture_callback, pUserData, 0, flags, &bug)) != SWITCH_STATUS_SUCCESS) {
 		/* the gRPC read thread is already running out of the session pool;
@@ -404,7 +408,7 @@ SWITCH_STANDARD_API(transcribe2_function)
 	return SWITCH_STATUS_SUCCESS;
 }
 
-#define TRANSCRIBE_API_SYNTAX "<uuid> [start|stop] [lang-code] [interim|full] [stereo|mono] [bug-name]"
+#define TRANSCRIBE_API_SYNTAX "<uuid> [start|stop] [lang-code] [interim|full] [stereo|mono|write] [bug-name]"
 SWITCH_STANDARD_API(transcribe_function)
 {
 	char *mycmd = NULL, *argv[6] = { 0 };
@@ -437,12 +441,22 @@ SWITCH_STANDARD_API(transcribe_function)
         char* lang = argv[2];
         int interim = argc > 3 && !strcmp(argv[3], "interim");
 				char *bugname = argc > 5 ? argv[5] : MY_BUG_NAME;
+				int write_only = 0;
 				if (argc > 4 && !strcmp(argv[4], "stereo")) {
           flags |= SMBF_WRITE_STREAM ;
           flags |= SMBF_STEREO;
 				}
-    		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "%s start transcribing %s %s\n", bugname, lang, interim ? "interim": "complete");
-				status = start_capture(lsession, flags, lang, interim, bugname);
+				/* write: transcribe only the audio the channel sends. Captured as
+				   stereo, not as a write-only bug, so that frames keep arriving
+				   at the read cadence -- zero-filled -- while nothing is being
+				   sent, rather than stalling the stream until the next write. */
+				else if (argc > 4 && !strcmp(argv[4], "write")) {
+          flags |= SMBF_WRITE_STREAM ;
+          flags |= SMBF_STEREO;
+          write_only = 1;
+				}
+    		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "%s start transcribing %s %s%s\n", bugname, lang, interim ? "interim": "complete", write_only ? " (write side)" : "");
+				status = start_capture(lsession, flags, lang, interim, bugname, write_only);
 			}
 			switch_core_session_rwunlock(lsession);
 		}

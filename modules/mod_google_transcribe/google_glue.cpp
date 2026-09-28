@@ -905,7 +905,7 @@ extern "C" {
           streamer = (GStreamer *) cb->streamer.load();
           while (streamer && switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS && !switch_test_flag((&frame), SFF_CNG)) {
             if (frame.datalen) {
-              if (cb->channels == 2 && cb->dbg_audio_levels) {
+              if (frame.channels == 2 && cb->dbg_audio_levels) {
                 /* debug: report each channel's peak level about once per
                    second of audio, to tell a silent channel from one the
                    recognizer ignores. Opt-in via RECOGNIZER_DEBUG_AUDIO_LEVELS
@@ -927,8 +927,21 @@ extern "C" {
                   cb->dbg_peak[0] = cb->dbg_peak[1] = 0;
                 }
               }
+              /* the audio sent to Google: the frame itself, or for the write
+                 capture its second channel alone (frame.samples is per channel) */
+              int16_t *pcm = (int16_t *) frame.data;
+              uint32_t pcm_len = frame.datalen;
+              int16_t write_side[SWITCH_RECOMMENDED_BUFFER_SIZE];
+              if (cb->write_only && frame.channels == 2) {
+                uint32_t n = std::min<uint32_t>(frame.samples, SWITCH_RECOMMENDED_BUFFER_SIZE);
+                for (uint32_t i = 0; i < n; i++) {
+                  write_side[i] = ((const int16_t *) frame.data)[2 * i + 1];
+                }
+                pcm = write_side;
+                pcm_len = n * sizeof(int16_t);
+              }
               if (cb->vad && !streamer->isConnected()) {
-                switch_vad_state_t state = switch_vad_process(cb->vad, (int16_t*) frame.data, frame.samples);
+                switch_vad_state_t state = switch_vad_process(cb->vad, pcm, frame.samples);
                 if (state == SWITCH_VAD_STATE_START_TALKING) {
                   switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "detected speech, connect to google speech now\n");
                   streamer->connect();
@@ -941,11 +954,11 @@ extern "C" {
                 /* interleaved API: capacity and counts are samples PER CHANNEL;
                    out[] holds SWITCH_RECOMMENDED_BUFFER_SIZE elements total */
                 spx_uint32_t out_len = SWITCH_RECOMMENDED_BUFFER_SIZE / cb->channels;
-                spx_uint32_t in_len = frame.samples;
+                spx_uint32_t in_len = pcm_len / sizeof(spx_int16_t) / cb->channels;
                 size_t written;
 
                 speex_resampler_process_interleaved_int(cb->resampler,
-                  (const spx_int16_t *) frame.data,
+                  (const spx_int16_t *) pcm,
                   (spx_uint32_t *) &in_len,
                   &out[0],
                   &out_len);
@@ -956,7 +969,7 @@ extern "C" {
                 /* frame.samples is per-channel (media_bug_read divides by the
                    channel count); frame.datalen is the actual byte count --
                    sizeof(int16) * samples sent only HALF of every stereo frame */
-                streamer->write( frame.data, frame.datalen);
+                streamer->write( pcm, pcm_len);
               }
             }
           }

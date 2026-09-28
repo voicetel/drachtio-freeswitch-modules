@@ -15,6 +15,21 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## Unreleased
+
+mod_google_transcribe: a `write` capture (`uuid_google_transcribe <uuid> start
+<lang> [interim] write [bug-name]`) transcribes only the audio the channel
+sends, as a mono stream. It captures both directions (read-driven, so frames
+keep arriving while nothing is sent) and forwards the second channel alone.
+Why: on the callBroadcast fleet, Google's per-channel recognition of a
+`stereo` stream returned results for channel 2 only — channel 1's speech never
+came back with the default, `latest_long` or `phone_call` model — although
+recognizing the same stream jointly transcribed channel 1, and both channels
+carried full-level audio (the debug level logging). Running a `mono` and a
+`write` capture under different bug names gives one transcript per direction.
+**[build]** and live on FreeSWITCH 1.10.12 (east-1/east-2/west-1, from the
+v0.6.3-based commit e191a05); this rebase onto v0.7.0 is **[build]**-pending.
+
 ## v0.7.0 — 2026-09-28
 
 Second full adversarial review of the maintained surface (all five

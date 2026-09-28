@@ -10,8 +10,19 @@ Optionally, the connection to the google cloud recognizer can be delayed until v
 The freeswitch module exposes two versions of an API command to transcribe speech:
 #### version 1
 ```bash
-uuid_google_transcribe <uuid> start <lang-code> [interim]
+uuid_google_transcribe <uuid> start <lang-code> [interim] [stereo|mono|write] [bug-name]
 ```
+- `mono` (the default) transcribes the audio the channel receives.
+- `stereo` sends both directions as a two-channel stream (see
+  GOOGLE_SPEECH_SEPARATE_RECOGNITION_PER_CHANNEL below). On a live fleet,
+  per-channel recognition of that stream returned results for the second
+  channel only; the first channel's speech never came back, whatever the
+  model.
+- `write` transcribes only the audio the channel sends, as a mono stream.
+  To transcribe both directions separately, run a `mono` capture and a
+  `write` capture under another `bug-name`; each result event carries its
+  capture's name in the `media-bugname` header.
+
 When using this command, additional speech processing options can be provided through Freeswitch channel variables, described [below](#command-variables).
 
 ####version 2
@@ -36,9 +47,9 @@ Attaches media bug to channel and performs streaming recognize request.
 - `interim` - If the 'interim' keyword is present then both interim and final transcription results will be returned; otherwise only final transcriptions will be returned
 
 ```
-uuid_google_transcribe <uuid> stop
+uuid_google_transcribe <uuid> stop [bug-name]
 ```
-Stop transcription on the channel.
+Stop transcription on the channel (the named capture's, if a `bug-name` is given).
 
 ### Command Variables
 Additional google speech options can be set through freeswitch channel variables for `uuid_google_transcribe` (some can alternatively be set in the command line for `uuid_google_transcribe2`).
