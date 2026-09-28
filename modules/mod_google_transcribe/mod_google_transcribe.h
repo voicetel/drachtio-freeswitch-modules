@@ -78,6 +78,11 @@ struct cap_cb {
 	int play_file;
 	switch_vad_t * vad;
 	uint32_t samples_per_second;
+	/* debug-only per-channel level tally, touched only by the media thread
+	 * (capture_callback): frames since the last report and each channel's
+	 * peak absolute sample over them. */
+	uint32_t dbg_frames;
+	int32_t dbg_peak[2];
 };
 #endif
 

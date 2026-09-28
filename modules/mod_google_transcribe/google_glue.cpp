@@ -507,6 +507,15 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
       return nullptr;
     }
     auto speech_event_type = response.speech_event_type();
+    switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
+      "grpc_read_thread: response results=%d speech_event_type=%d\n", response.results_size(), (int) speech_event_type);
+    for (int r = 0; r < response.results_size(); ++r) {
+      const auto& result = response.results(r);
+      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
+        "grpc_read_thread: result %d channel_tag=%d is_final=%d alternatives=%d transcript_len=%zu\n",
+        r, result.channel_tag(), result.is_final() ? 1 : 0, result.alternatives_size(),
+        result.alternatives_size() > 0 ? result.alternatives(0).transcript().size() : (size_t) 0);
+    }
     if (response.has_error()) {
       Status status = response.error();
       switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "grpc_read_thread: error %s (%d)\n", status.message().c_str(), status.code()) ;
@@ -886,6 +895,23 @@ extern "C" {
           streamer = (GStreamer *) cb->streamer.load();
           while (streamer && switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS && !switch_test_flag((&frame), SFF_CNG)) {
             if (frame.datalen) {
+              if (cb->channels == 2) {
+                /* debug: report each channel's peak level about once a second,
+                   to tell a silent channel from one the recognizer ignores */
+                const int16_t *s = (const int16_t *) frame.data;
+                for (uint32_t i = 0; i + 1 < frame.datalen / sizeof(int16_t); i += 2) {
+                  int32_t l = abs((int32_t) s[i]), rr = abs((int32_t) s[i + 1]);
+                  if (l > cb->dbg_peak[0]) cb->dbg_peak[0] = l;
+                  if (rr > cb->dbg_peak[1]) cb->dbg_peak[1] = rr;
+                }
+                if (++cb->dbg_frames >= 50) {
+                  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
+                    "capture_callback: stereo peaks read=%d write=%d over %u frames (samples=%u datalen=%u)\n",
+                    cb->dbg_peak[0], cb->dbg_peak[1], cb->dbg_frames, frame.samples, frame.datalen);
+                  cb->dbg_frames = 0;
+                  cb->dbg_peak[0] = cb->dbg_peak[1] = 0;
+                }
+              }
               if (cb->vad && !streamer->isConnected()) {
                 switch_vad_state_t state = switch_vad_process(cb->vad, (int16_t*) frame.data, frame.samples);
                 if (state == SWITCH_VAD_STATE_START_TALKING) {
