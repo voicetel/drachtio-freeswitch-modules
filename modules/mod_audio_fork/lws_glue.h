@@ -7,6 +7,9 @@ int parse_ws_uri(switch_channel_t *channel, const char* szServerUri, char* host,
 
 switch_status_t fork_init();
 switch_status_t fork_cleanup();
+/* number of live AudioPipes (created, not yet reaped); the shutdown hook
+   refuses to unload while this is non-zero */
+int fork_sessions_active();
 switch_status_t fork_session_init(switch_core_session_t *session, responseHandler_t responseHandler,
 		uint32_t samples_per_second, char *host, unsigned int port, char* path, int sampling, int sslFlags, int channels, 
     char *bugname, char* metadata, void **ppUserData);

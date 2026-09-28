@@ -55,6 +55,13 @@ namespace {
   static std::atomic<unsigned int> idxCallCount{0};
   static uint32_t playCount = 0;
 
+  /* Live-pipe count for the unload gate: incremented when a session's
+     AudioPipe is created, decremented only when the last module code touching
+     it has run (the reaper lambda, after the pipe is deleted). Unloading with
+     this non-zero would destroy the lws context under live pipes and let
+     detached reapers execute unmapped module text. */
+  static std::atomic<int> g_activePipes{0};
+
   void processIncomingMessage(private_t* tech_pvt, switch_core_session_t* session, const char* message) {
     std::string msg = message;
     std::string type;
@@ -343,12 +350,15 @@ namespace {
 
     std::string sessionId(tech_pvt->sessionId);
     uint32_t id = tech_pvt->id;
-    std::thread t([pAp, sessionId, id] {
+    std::thread t([pAp, sessionId, id]() mutable {
       pAp->close();         // no-op unless still connected
       pAp->waitForClose();  // block until the lws CLOSED/FAIL is signalled
       switch_log_printf(SWITCH_CHANNEL_UUID_LOG(sessionId.c_str()), SWITCH_LOG_DEBUG,
         "(%u) audio pipe closed and reaped\n", id);
-      // pAp goes out of scope here -> AudioPipe deleted
+      /* delete the pipe (module code) BEFORE releasing the unload gate, so an
+         unload can never leave the dtor running on unmapped text */
+      pAp.reset();
+      --g_activePipes;
     });
     t.detach();
   }
@@ -500,6 +510,10 @@ extern "C" {
     return SWITCH_STATUS_FALSE;
   }
 
+  int fork_sessions_active() {
+    return g_activePipes.load();
+  }
+
   switch_status_t fork_session_init(switch_core_session_t *session, 
               responseHandler_t responseHandler,
               uint32_t samples_per_second, 
@@ -519,11 +533,16 @@ extern "C" {
       switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "error allocating memory!\n");
       return SWITCH_STATUS_FALSE;
     }
-    if (SWITCH_STATUS_SUCCESS != fork_data_init(tech_pvt, session, host, port, path, sslFlags, samples_per_second, sampling, channels, 
+    if (SWITCH_STATUS_SUCCESS != fork_data_init(tech_pvt, session, host, port, path, sslFlags, samples_per_second, sampling, channels,
       bugname, metadata, responseHandler)) {
       destroy_tech_pvt(tech_pvt);
       return SWITCH_STATUS_FALSE;
     }
+
+    /* unload gate: from here the pipe is live; it is released either by
+       fork_session_cleanup_unattached (bug-add failure) or by the reaper
+       lambda after the pipe is deleted */
+    ++g_activePipes;
 
     *ppUserData = tech_pvt;
     return SWITCH_STATUS_SUCCESS;
@@ -549,6 +568,9 @@ extern "C" {
        dg_transcribe_session_cleanup (9e4ffce). */
     destroy_tech_pvt(tech_pvt);
     switch_mutex_unlock(tech_pvt->mutex);
+    /* no reaper is spawned on this path, so this is where the unload gate is
+       released for a session whose bug was never attached */
+    --g_activePipes;
   }
 
   switch_status_t fork_session_cleanup(switch_core_session_t *session, char *bugname, char* text, int channelIsClosing) {

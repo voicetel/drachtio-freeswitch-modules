@@ -372,6 +372,17 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_audio_fork_load)
   Macro expands to: switch_status_t mod_audio_fork_shutdown() */
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_audio_fork_shutdown)
 {
+  /* refuse to unload with live pipes: fork_cleanup would destroy the lws
+     context under live connections (their reapers then block in waitForClose
+     forever or run AudioPipe code on unmapped module text). Same gate as
+     mod_azure_transcribe/mod_aws_transcribe. */
+  int active = fork_sessions_active();
+  if (active > 0) {
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+      "mod_audio_fork: %d session(s) still active; not unloading. Stop them first (uuid_audio_fork <uuid> stop) or hang up the calls.\n", active);
+    return SWITCH_STATUS_FALSE;
+  }
+
 	fork_cleanup();
   //mod_running = 0;
 	switch_event_free_subclass(EVENT_TRANSCRIPTION);
