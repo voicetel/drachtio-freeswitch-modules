@@ -86,6 +86,15 @@ static switch_status_t start_capture(switch_core_session_t *session,
 		return SWITCH_STATUS_FALSE;
 	}
 
+	/* a pre-answer'd session can still have no negotiated codec (e.g. an
+	   outbound leg ringing without early media); read_codec (or its
+	   implementation) is then NULL and the deref below segfaulted the FS
+	   process */
+	if (!read_codec || !read_codec->implementation) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "mod_audio_fork: no read codec negotiated yet; try again after media is up\n");
+		return SWITCH_STATUS_FALSE;
+	}
+
 	switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "calling fork_session_init.\n");
 	if (SWITCH_STATUS_FALSE == fork_session_init(session, responseHandler, read_codec->implementation->actual_samples_per_second, 
 		host, port, path, sampling, sslFlags, channels, bugname, metadata, &pUserData)) {
