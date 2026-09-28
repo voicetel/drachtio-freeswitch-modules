@@ -15,6 +15,63 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## Unreleased
+
+Third full review of the maintained surface (all five modules), one commit per
+issue. Headline: a cross-module ABBA deadlock none of the prior reviews
+caught, plus a crash-class teardown race in each of audio_fork and aws.
+
+### mod_audio_fork
+- **Stop/hangup ABBA deadlock** — `fork_session_cleanup` held `tech_pvt->mutex`
+  across `switch_core_media_bug_remove` (which takes `session->bug_rwlock` in
+  write mode), while the hangup path (`switch_core_media_bug_remove_all` at
+  session-thread exit) holds that write lock across the module's CLOSE
+  callback, which takes `tech_pvt->mutex`. A stop racing a hangup wedged both
+  threads permanently. The bug is now removed after the mutex is released
+  (verified safe against FS 1.10.12: the CLOSE fired by remove early-returns
+  on the cleared private; a remove on an already-unlinked bug is a not-found
+  walk on session-pool memory).
+- **Concurrent cleanup crashed the process** — two in-flight cleanups (two API
+  stops share the session read lock, or stop racing hangup CLOSE) double-freed
+  the playout list, sent into a reaper-deleted pipe, and reaped a NULL pipe
+  (`shared_ptr<AudioPipe>(nullptr)` → null deref on the detached thread).
+  Cleanup is now idempotent (bails when the private is already cleared, NULLs
+  the playout head, reads the pipe pointer under the lock).
+- **Stereo `media_bug_read` heap overflow on the non-resampled path** — the
+  direct ring-buffer read guarded on the mono `binaryMinSpace()` while FS's
+  `SMBF_STEREO` path writes 2x that; reachable at native rate when
+  2·bytes_per_packet does not divide the ring size (e.g. stereo PCMU at 30ms
+  ptime). The v0.7.0 stereo hardening covered only the resampler branch. The
+  direct-path minimum free space is now channel-scaled. (Deepgram lineage
+  copy fixed in its own commit.)
+- **`start` on a codec-less session dereferenced a NULL read codec**
+  (pre-answer'd outbound leg without early media) — now fails the start.
+- **Invalid `ws-uri`/sample-rate arguments still ran `start_capture`** (with
+  uninitialized `host/path/port/sslFlags`) — validation now gates the call.
+- **Unbounded `sampling` argument overflowed the ring-size math** (`320 ·
+  sampling` as int → `bad_alloc` → `std::terminate`; also memory-exhaustion
+  sizing). Bounded to 1..48000, multiple of 8000.
+- **`send_text`/`pauseresume`/`graceful-shutdown` used the pipe/bug
+  unsynchronized against teardown** — the un-fixed siblings of `11034b5`; they
+  now take `tech_pvt->mutex` and re-verify the private under it.
+- **Over-length bugname orphaned hangup cleanup** (private keyed by full name,
+  CLOSE looked up the truncated copy → permanent pipe+connection leak) —
+  rejected at the API, matching aws/azure/google.
+- **Concurrent same-bugname `start`s orphaned the first pipe** — FS only
+  rejects duplicate bug names with `SMBF_ONE_ONLY`; now passed.
+- **Unload with live sessions destroyed the lws context under them**
+  (connecting pipes' reapers then blocked in `waitForClose()` forever, and
+  detached reapers could run module code on unmapped text) — a live-pipe
+  counter now refuses the unload, matching azure/aws.
+- **Oversized single-frame inbound messages bypassed `MAX_RECV_BUF_SIZE`**
+  (the cap was only checked in the realloc branch; a first-fragment length is
+  allocated whole) — now capped at first-fragment time.
+- Chore: dead `fork_service_threads` decl / dead connect-failure branch /
+  dead null-check after `new`; NULL-`%s` log args; `-Wreorder` ctor init list;
+  unused lws local.
+
+---
+
 ## v0.7.2 — 2026-09-28
 
 Closes both items v0.7.1 left open: the deepgram soak gap it documented as
