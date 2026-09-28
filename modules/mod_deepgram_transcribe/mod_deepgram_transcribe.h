@@ -1,5 +1,5 @@
-#ifndef __MOD_AWS_TRANSCRIBE_H__
-#define __MOD_AWS_TRANSCRIBE_H__
+#ifndef __MOD_DEEPGRAM_TRANSCRIBE_H__
+#define __MOD_DEEPGRAM_TRANSCRIBE_H__
 
 #include <switch.h>
 #include <speex/speex_resampler.h>
