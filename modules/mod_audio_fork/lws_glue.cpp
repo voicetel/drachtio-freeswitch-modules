@@ -200,11 +200,23 @@ namespace {
             case AudioPipe::CONNECT_SUCCESS:
               switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "connection successful\n");
               tech_pvt->responseHandler(session, EVENT_CONNECT_SUCCESS, NULL);
-              if (strlen(tech_pvt->initialMetadata) > 0) {
+              /* The reaper (session cleanup) nulls and deletes the AudioPipe
+                 under tech_pvt->mutex. Fetch the pipe under the same lock and
+                 skip the metadata send if it is already gone, instead of
+                 racing a NULL or about-to-be-freed pointer. The mutex is
+                 session-pool-owned and never destroyed before the pool, and
+                 the SessionLock above pins the session, so locking here is
+                 safe; lock order (session rwlock -> tech_pvt->mutex) matches
+                 the cleanup path, and the mutex is recursive for the case
+                 where the playout append already holds it on this same
+                 service thread. */
+              switch_mutex_lock(tech_pvt->mutex);
+              if (strlen(tech_pvt->initialMetadata) > 0 && tech_pvt->pAudioPipe) {
                 switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "sending initial metadata %s\n", tech_pvt->initialMetadata);
                 AudioPipe *pAudioPipe = static_cast<AudioPipe *>(tech_pvt->pAudioPipe);
                 pAudioPipe->bufferForSending(tech_pvt->initialMetadata);
               }
+              switch_mutex_unlock(tech_pvt->mutex);
             break;
             case AudioPipe::CONNECT_FAIL:
             {
