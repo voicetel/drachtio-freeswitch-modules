@@ -42,7 +42,6 @@ int AudioPipe::lws_callback(struct lws *wsi,
   struct AudioPipe::lws_per_vhost_data *vhd = 
     (struct AudioPipe::lws_per_vhost_data *) lws_protocol_vh_priv_get(lws_get_vhost(wsi), lws_get_protocol(wsi));
 
-  struct lws_vhost* vhost = lws_get_vhost(wsi);
   AudioPipe ** ppAp = (AudioPipe **) user;
 
   switch (reason) {
@@ -632,13 +631,13 @@ bool AudioPipe::deinitialize() {
 // instance members
 AudioPipe::AudioPipe(const char* uuid, const char* host, unsigned int port, const char* path,
   int sslFlags, size_t bufLen, size_t minFreespace, const char* username, const char* password, char* bugname, notifyHandler_t callback) :
-  m_uuid(uuid), m_host(host), m_port(port), m_path(path), m_sslFlags(sslFlags),
-  m_audio_buffer_min_freespace(minFreespace), m_audio_buffer_max_len(bufLen), m_gracefulShutdown(false),
-  m_closePending(false),
-  m_audio_buffer_write_offset(LWS_PRE), m_recv_buf(nullptr), m_recv_buf_ptr(nullptr),
-  m_recv_buf_discarding(false), m_bugname(bugname),
-  m_state(LWS_CLIENT_IDLE), m_wsi(nullptr), m_vhd(nullptr), m_callback(callback),
-  m_closeSignaled(false) {
+  m_state(LWS_CLIENT_IDLE), m_uuid(uuid), m_host(host), m_bugname(bugname),
+  m_port(port), m_path(path), m_sslFlags(sslFlags), m_wsi(nullptr),
+  m_audio_buffer_max_len(bufLen), m_audio_buffer_write_offset(LWS_PRE),
+  m_audio_buffer_min_freespace(minFreespace),
+  m_recv_buf(nullptr), m_recv_buf_ptr(nullptr), m_recv_buf_discarding(false),
+  m_vhd(nullptr), m_callback(callback),
+  m_gracefulShutdown(false), m_closePending(false), m_closeSignaled(false) {
 
   if (username && password) {
     m_username.assign(username);

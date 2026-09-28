@@ -309,12 +309,10 @@ namespace {
     
     size_t buflen = LWS_PRE + (FRAME_SIZE_8000 * desiredSampling / 8000 * channels * 1000 / RTP_PACKETIZATION_PERIOD * nAudioBufferSecs);
 
-    AudioPipe* ap = new AudioPipe(tech_pvt->sessionId, host, port, path, sslFlags, 
+    /* new throws on failure rather than returning null, so there is no null
+       check here (a failed allocation propagates as std::bad_alloc) */
+    AudioPipe* ap = new AudioPipe(tech_pvt->sessionId, host, port, path, sslFlags,
       buflen, read_impl.decoded_bytes_per_packet, username, password, bugname, eventCallback);
-    if (!ap) {
-      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error allocating AudioPipe\n");
-      return SWITCH_STATUS_FALSE;
-    }
 
     tech_pvt->pAudioPipe = static_cast<void *>(ap);
 
