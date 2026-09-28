@@ -15,20 +15,73 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
-## Unreleased
+## v0.7.1 — 2026-09-28
 
-mod_google_transcribe: a `write` capture (`uuid_google_transcribe <uuid> start
-<lang> [interim] write [bug-name]`) transcribes only the audio the channel
-sends, as a mono stream. It captures both directions (read-driven, so frames
-keep arriving while nothing is sent) and forwards the second channel alone.
+### mod_google_transcribe: a `write` capture
+
+`uuid_google_transcribe <uuid> start <lang> [interim] write [bug-name]`
+transcribes only the audio the channel sends, as a mono stream. It captures
+both directions (read-driven, so frames keep arriving while nothing is sent)
+and forwards the second channel alone.
+
 Why: on the callBroadcast fleet, Google's per-channel recognition of a
 `stereo` stream returned results for channel 2 only — channel 1's speech never
 came back with the default, `latest_long` or `phone_call` model — although
 recognizing the same stream jointly transcribed channel 1, and both channels
 carried full-level audio (the debug level logging). Running a `mono` and a
 `write` capture under different bug names gives one transcript per direction.
+
 **[build]** and live on FreeSWITCH 1.10.12 (east-1/east-2/west-1, from the
-v0.6.3-based commit e191a05); this rebase onto v0.7.0 is **[build]**-pending.
+v0.6.3-based commit e191a05). For the rebase onto v0.7.0:
+`mod_google_transcribe.c` is **[build]**-clean against the 1.10.12 headers
+(the `write_only` plumbing, the `write` argv arm, and the `cap_cb` field set
+before bug-add, so no frame can reach the callback unset); `google_glue.cpp`
+remains **[build]**-pending — the review host has no gRPC/googleapis
+toolchain. Build and load before rolling this tag to a fleet.
+
+### review follow-ups (post-v0.7.0 nits)
+
+- **`MEDIA_BUG_FRAME_BUF_SIZE`** — the five maintained glues sized their
+  media-bug frame buffers with a bare `2 * SWITCH_RECOMMENDED_BUFFER_SIZE` and
+  a comment pointing at "the azure commit" for the rationale. Promoted to a
+  named macro in each module header, rationale stated once in
+  `mod_azure_transcribe.h` with pointers from the other four. The 2x factor is
+  a proven bound, not a heuristic: `switch_core_media_bug_read()` ends its
+  `SMBF_STEREO` path with `memcpy(frame->data, bug->tmp, bytes * 2)` for
+  `bytes = read_impl.decoded_bytes_per_packet`, while its `buflen` guard only
+  checks the MONO count — and `switch_core_codec_add_implementation()` rejects
+  any codec exceeding `SWITCH_RECOMMENDED_BUFFER_SIZE` at registration, so the
+  write can never exceed 2x. No behavior change; a `static_assert` /
+  `_Static_assert` drift guard sits in each header next to the macro, so every
+  real module build enforces it (verified: flipping the factor to 1 breaks the
+  build in c11, c++11 and c++17).
+  The 16KB stack buffers themselves are unchanged — they are the workaround,
+  not the defect; the underlying bug is in FS core.
+- **`google_speech_frame` indentation** — `e9d1576` left the `if (streamer &&
+  ...)` gate in a third indent style within its block. Cosmetic.
+
+### Verification
+
+- **[unit]** `make -C tests` 9/9; `make -C tests sanitize` ASan/UBSan clean;
+  `HOST_COVERAGE=100.0%` (base64 65/65, simple_buffer 31/31).
+- All five module headers compile against the real FreeSWITCH 1.10.12 headers
+  in c11, c++11 and c++17 (15/15), with the bound guard above; the guard was
+  checked by negation, not just for a green build.
+- `mod_google_transcribe.c` compiles clean against the 1.10.12 headers.
+- Not re-run here: `tests/soak` (needs Docker) and the vendor-SDK builds.
+
+### Known gap (deferred, not blocking)
+
+The `mod_deepgram_transcribe` AudioPipe dials TLS unconditionally, so against
+the plain-ws mock every connect ends in `CONNECT_FAIL`. The soak therefore
+covers connect-adoption, pre-handshake `finish()`, the reaper promise and
+`deinitialize()` — but **none** of the v0.7.0 connected-path changes
+(ESTABLISHED record-and-complete, inbound recv reassembly and
+oversized-discard, `close()`'s CAS-from-CONNECTED, far-end drop). Closing it
+means serving TLS from `ws_mock.py` (self-signed cert generated in `run.sh`);
+that needs a Docker-capable host to verify, so it is deliberately left out of
+this tag rather than shipped unverified. Until then the deepgram
+connected-path rests on the live-credentials soak.
 
 ## v0.7.0 — 2026-09-28
 
