@@ -531,8 +531,13 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
       cJSON_AddStringToObject(json, "type", "error");
       cJSON_AddStringToObject(json, "error", status.message().c_str());
       char* jsonString = cJSON_PrintUnformatted(json);
-      cb->responseHandler(session, jsonString, cb->bugname);
-      free(jsonString);
+      /* responseHandler strcmp()s its json argument, so a NULL here (OOM)
+         crashed the read thread's caller chain; the Finish()-status error
+         path below already guards the same call */
+      if (jsonString) {
+        cb->responseHandler(session, jsonString, cb->bugname);
+        free(jsonString);
+      }
       cJSON_Delete(json);
     }
     
@@ -600,8 +605,11 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
       }
 
       char* json = cJSON_PrintUnformatted(jResult);
-      cb->responseHandler(session, (const char *) json, cb->bugname);
-      free(json);
+      /* responseHandler strcmp()s its json argument: skip on OOM (NULL) */
+      if (json) {
+        cb->responseHandler(session, (const char *) json, cb->bugname);
+        free(json);
+      }
 
       cJSON_Delete(jResult);
     }
