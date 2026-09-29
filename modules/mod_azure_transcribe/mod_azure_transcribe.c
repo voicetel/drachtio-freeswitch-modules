@@ -166,11 +166,28 @@ SWITCH_STANDARD_API(azure_transcribe_function)
 				status = do_stop(lsession, bugname);
 			} else if (!strcasecmp(argv[1], "start")) {
         char* lang = argv[2];
-        int interim = argc > 3 && !strcmp(argv[3], "interim");
-				char *bugname = argc > 5 ? argv[5] : MY_BUG_NAME;
-				if (argc > 4 && !strcmp(argv[4], "stereo")) {
-          flags |= SMBF_WRITE_STREAM ;
-          flags |= SMBF_STEREO;
+        int interim = 0;
+				char *bugname = MY_BUG_NAME;
+				int i;
+				/* the options were previously positional: "start en stereo" put
+				   "stereo" in the interim slot and silently ran mono, and the
+				   console completion advertised a "final" token the parser did
+				   not know. Accept the keywords in any order; the first
+				   non-keyword token is the bugname. */
+				for (i = 3; i < argc; i++) {
+          if (!strcasecmp(argv[i], "interim")) {
+            interim = 1;
+          }
+          else if (!strcasecmp(argv[i], "stereo")) {
+            flags |= SMBF_WRITE_STREAM;
+            flags |= SMBF_STEREO;
+          }
+          else if (!strcasecmp(argv[i], "mono") || !strcasecmp(argv[i], "final")) {
+            /* defaults; accepted for symmetry with the console completion */
+          }
+          else {
+            bugname = argv[i];
+          }
 				}
 				if (strlen(bugname) >= MAX_BUG_LEN) {
 					/* the channel private is stored under the FULL name but
