@@ -66,8 +66,7 @@ public:
 		u_int16_t channels,
     char *lang, 
     int interim,
-		uint32_t samples_per_second,
-		const char* region, 
+		const char* region,
 		const char* subscriptionKey, 
 		responseHandler_t responseHandler
   ) : m_sessionId(sessionId), m_bugname(bugname), m_finished(false),
@@ -609,7 +608,7 @@ extern "C" {
 
 	// start transcribe on a channel
 	switch_status_t azure_transcribe_session_init(switch_core_session_t *session, responseHandler_t responseHandler, 
-          uint32_t samples_per_second, uint32_t channels, char* lang, int interim, char* bugname, void **ppUserData
+          uint32_t channels, char* lang, int interim, char* bugname, void **ppUserData
 	) {
 		GStreamer *streamer = NULL;
 		switch_status_t status = SWITCH_STATUS_SUCCESS;
@@ -717,7 +716,7 @@ extern "C" {
 			   from the channel vars OR the env vars -- the raw channel-var
 			   pointers are NULL under env-var-only auth (the env copies were
 			   previously dead stores and env auth crashed in the constructor) */
-			streamer = new GStreamer(sessionId, bugname, channels, lang, interim, sampleRate, cb->region, cb->subscriptionKey, responseHandler);
+			streamer = new GStreamer(sessionId, bugname, channels, lang, interim, cb->region, cb->subscriptionKey, responseHandler);
 			cb->streamer = streamer;
 			if (!cb->vad) streamer->connect();
 		} catch (std::exception& e) {
