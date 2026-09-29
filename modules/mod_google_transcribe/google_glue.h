@@ -3,6 +3,9 @@
 
 switch_status_t google_speech_init();
 switch_status_t google_speech_cleanup();
+/* number of live transcription sessions; the shutdown hook refuses to unload
+   while this is non-zero */
+int google_speech_sessions_active();
 switch_status_t google_speech_session_init(switch_core_session_t *session, responseHandler_t responseHandler, 
 		uint32_t to_rate, uint32_t samples_per_second, uint32_t channels, char* lang, int interim, char *bugname, int single_utterence,
 		int separate_recognition, int max_alternatives, int profinity_filter, int word_time_offset, int punctuation, const char* model, int enhanced, 

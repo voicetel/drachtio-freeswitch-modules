@@ -555,6 +555,16 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_transcribe_load)
   Macro expands to: switch_status_t mod_google_transcribe_shutdown() */
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_transcribe_shutdown)
 {
+	/* refuse to unload with live sessions: the gRPC read threads run module
+	   code out of session pools, so unloading unmaps module text under them.
+	   Same gate as azure/aws (v0.7.0). */
+	int active = google_speech_sessions_active();
+	if (active > 0) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+			"mod_google_transcribe: %d session(s) still active; not unloading. Stop them first (uuid_google_transcribe <uuid> stop) or hang up the calls.\n", active);
+		return SWITCH_STATUS_FALSE;
+	}
+
 	google_speech_cleanup();
 	switch_event_free_subclass(TRANSCRIBE_EVENT_RESULTS);
 	switch_event_free_subclass(TRANSCRIBE_EVENT_END_OF_UTTERANCE);

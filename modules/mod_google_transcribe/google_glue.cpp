@@ -51,8 +51,14 @@ using google::rpc::Status;
 
 /* number of CHUNKSIZE chunks to pre-buffer while waiting for the gRPC stream to connect (VAD path) */
 #define PREBUFFER_CHUNKS (15)
+/* Live-session count for the unload gate: incremented when a session is fully
+   initialized (streamer stored + read thread created), decremented when
+   reap_streamer actually reaps it. Unloading with this non-zero unmaps module
+   text under the gRPC read threads. */
+static std::atomic<int> g_activeSessions{0};
 
 namespace {
+
   int case_insensitive_match(std::string s1, std::string s2) {
    std::transform(s1.begin(), s1.end(), s1.begin(), ::tolower);
    std::transform(s2.begin(), s2.end(), s2.begin(), ::tolower);
@@ -669,6 +675,10 @@ static void reap_streamer(struct cap_cb* cb) {
   if (streamer) {
     delete streamer;
     cb->streamer.store(NULL);
+    /* unload gate: released here, after the streamer (and its read thread)
+       are gone -- reap_streamer is idempotent, so only the first reap
+       decrements */
+    --g_activeSessions;
   }
   if (cb->resampler) {
     speex_resampler_destroy(cb->resampler);
@@ -701,6 +711,9 @@ extern "C" {
 
     switch_status_t google_speech_cleanup() {
       return SWITCH_STATUS_SUCCESS;
+    }
+    int google_speech_sessions_active() {
+      return g_activeSessions.load();
     }
     switch_status_t google_speech_session_init(switch_core_session_t *session, responseHandler_t responseHandler, 
           uint32_t to_rate, uint32_t samples_per_second, uint32_t channels, char* lang, int interim, char *bugname,
@@ -823,6 +836,10 @@ extern "C" {
         if (cb->vad) { switch_vad_destroy(&cb->vad); cb->vad = nullptr; }
         return SWITCH_STATUS_FALSE;
       }
+
+      /* unload gate: only fully-initialized sessions count; released in
+         reap_streamer */
+      ++g_activeSessions;
 
       *ppUserData = cb;
       return SWITCH_STATUS_SUCCESS;
