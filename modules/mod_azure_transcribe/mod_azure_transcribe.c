@@ -257,9 +257,9 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_azure_transcribe_load)
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "azure Speech Transcription API loading..\n");
 
-  if (SWITCH_STATUS_FALSE == azure_transcribe_init()) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Failed initializing azure speech interface\n");
-	}
+  /* azure_transcribe_init cannot fail (it only inspects the environment), so
+     the old FAILURE branch was dead */
+  azure_transcribe_init();
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "azure Speech Transcription API successfully loaded\n");
 
