@@ -103,6 +103,37 @@ caught, plus a crash-class teardown race in each of audio_fork and aws.
 - README: it documented named concurrent transcriptions (`stop [bugname]`);
   the module supports exactly one per channel.
 
+### mod_google_transcribe
+- **Stop/hangup ABBA deadlock** — same class as audio_fork (`cb->mutex` held
+  across `switch_core_media_bug_remove` vs hangup CLOSE under `bug_rwlock`);
+  the locked region now ends before the remove.
+- **`start` on a codec-less session dereferenced a NULL `iananame`** — both
+  `start_capture` and `start_capture2`; now fails the start.
+- **Stereo/`write` captures stalled and dropped audio on one-sided media** —
+  with `fill=SWITCH_TRUE`, `media_bug_read` returns no frame unless BOTH
+  directions hold a full frame (verified in FS 1.10.12); the speaking side
+  buffered ~512KB then dropped, contradicting the `write` capture's
+  documented design. Stereo bugs now read with `fill=SWITCH_FALSE` (the
+  silent side is 0xFF-filled ≈ digital silence); mono bugs keep `fill=TRUE`
+  (with FALSE an empty read buffer would supply endless fill frames and the
+  drain loop would never terminate). Note: the callback is read-driven — if
+  the caller's RTP stops entirely, frames stop regardless.
+- **Unload with live sessions unmapped module code under the gRPC read
+  threads** — live-session counter, refuse unload while non-zero.
+- **Unchecked `switch_thread_create`** left a readerless connected stream
+  (flow-control stall) — init now fails and tears down.
+- **Unchecked `cJSON_PrintUnformatted`** (OOM → NULL → `strcmp` crash in
+  `responseHandler`) — guarded at both call sites.
+- **VAD-init failure silently fell open to immediate streaming** — with
+  `START_RECOGNIZING_ON_VAD` set, a failed `switch_vad_init` connected
+  immediately; the start now fails.
+- **`uuid_google_transcribe2`'s sample-rate was unvalidated** (atol garbage
+  → speex output rate 0) — bounded to 4000..48000.
+- **`RECOGNIZER_VAD_DEBUG` was documented but never read** — now honored.
+- Chore: dead `SFF_CNG` loop test (FS zeroes `frame->flags` on every read);
+  duplicated `RECOGNIZER_VAD_VOICE_MS` read; the "Bug is not attached (race)"
+  INFO that fired on every normal stop is now DEBUG.
+
 ---
 
 ## v0.7.2 — 2026-09-28
