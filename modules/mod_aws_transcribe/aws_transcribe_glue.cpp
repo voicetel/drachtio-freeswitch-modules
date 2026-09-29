@@ -832,6 +832,35 @@ extern "C" {
 		return SWITCH_STATUS_FALSE;
 	}
 	
+	/* Teardown for a media bug's own CLOSE callback: operates on THIS bug's
+	   cap_cb instead of re-resolving by bugname through the channel-private.
+	   Two concurrent same-bugname starts both pass the get_private check
+	   before either stores its bug; the second set_private overwrites the
+	   first, so a name-based stop (as CLOSE previously used) resolves to the
+	   second bug from BOTH CLOSE callbacks -- the first cb's worker was
+	   orphaned (never finished or joined), blocking forever in m_cond.wait
+	   with a live HTTP/2 stream (billing) and a latent UAF on the freed
+	   session-pool cb. Port of the azure pattern (CLOSE stops its own cb). */
+	switch_status_t aws_transcribe_session_close(struct cap_cb *cb) {
+		if (!cb) return SWITCH_STATUS_FALSE;
+		switch_mutex_lock(cb->mutex);
+		/* order matters: set the flag before loading the pointer (the worker
+		   publishes the pointer, then checks the flag) */
+		cb->stop_requested.store(1);
+		GStreamer* streamer = (GStreamer *) cb->streamer.load();
+		if (streamer) {
+			streamer->finish();
+		}
+		if (cb->thread) {
+			switch_status_t retval;
+			switch_thread_join(&retval, cb->thread);
+			cb->thread = NULL;
+		}
+		killcb(cb);
+		switch_mutex_unlock(cb->mutex);
+		return SWITCH_STATUS_SUCCESS;
+	}
+
 	void aws_transcribe_session_cleanup(void *pUserData) {
 		struct cap_cb *cb = (struct cap_cb *) pUserData;
 		if (!cb) return;
