@@ -14,13 +14,17 @@ Attaches media bug to channel and performs streaming recognize request.
 - `uuid` - unique identifier of Freeswitch channel
 - `lang-code` - a valid AWS [language code](https://docs.aws.amazon.com/transcribe/latest/dg/streaming.html) that is supported for streaming transcription
 - `interim` - If the 'interim' keyword is present then both interim and final transcription results will be returned; otherwise only final transcriptions will be returned
-- `stereo` - If the 'stereo' keyword is present, both caller and callee audio are captured as a two-channel (stereo) stream; otherwise only the caller's audio is captured
-- `bugname` - optional name for the media bug (default: `aws_transcribe`); use the same name with `stop` to stop a specifically-named transcription
+- `stereo` - If the 'stereo' keyword is present, both caller and callee audio are captured as a two-channel (stereo) stream; otherwise only the caller's audio is captured. **Stereo requires `AWS_ENABLE_CHANNEL_IDENTIFICATION` to be set** — AWS rejects `NumberOfChannels=2` without it (BadRequestException) and the module now warns at start time.
+- `bugname` - optional name for the media bug (default: `aws_transcribe`)
 
 ```
 uuid_aws_transcribe <uuid> stop [bugname]
 ```
 Stop transcription on the channel.
+
+### Limits
+- AWS closes a streaming transcription after **4 hours**; the session ends with a `jambonz_transcribe::error` event. Restart the transcription on longer calls.
+- On `stop`, up to ~10s of already-buffered audio is flushed to AWS before the stream closes (bounded by the 10s final-response deadline); on a dead network the pending request is aborted 10s after close so teardown cannot hang.
 
 ### Authentication
 The plugin will first look for channel variables, then environment variables.  If neither are found, the AWS SDK's default credential provider chain is used.
@@ -64,6 +68,8 @@ Additional options can be set through freeswitch channel variables:
 ```
 
 All events carry a `transcription-vendor: aws` header; `aws_transcribe::vad_detected` is fired when speech is detected on the VAD path; `jambonz_transcribe::error` is fired on stream errors (the subclass name is inherited and frozen -- external consumers key on it).
+
+The module reserves `aws_transcribe::end_of_transcript`, `aws_transcribe::no_audio_detected` and `aws_transcribe::max_duration_exceeded` for compatibility, but **it never fires them** (no producer exists); do not wait on them.
 
 ## Usage
 When using [drachtio-fsrmf](https://www.npmjs.com/package/drachtio-fsmrf), you can access this API command via the api method on the 'endpoint' object.
