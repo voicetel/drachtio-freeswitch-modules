@@ -17,7 +17,9 @@ static switch_status_t do_stop(switch_core_session_t *session, char* bugname);
 static void responseHandler(switch_core_session_t* session, const char* eventName, const char * json, const char* bugname, int finished) {
 	switch_event_t *event = NULL;
 	switch_channel_t *channel = switch_core_session_get_channel(session);
-	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "responseHandler event %s, body %s.\n", eventName, json);
+	/* json is NULL for the bodiless events (vad_detected, utterance boundaries);
+	   %s on NULL is UB (glibc prints "(null)", but don't rely on it) */
+	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "responseHandler event %s, body %s.\n", eventName, json ? json : "(none)");
 	if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, eventName) != SWITCH_STATUS_SUCCESS) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "responseHandler failed to create event subclass %s\n", eventName);
 		return;
