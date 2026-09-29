@@ -195,7 +195,14 @@ static switch_status_t start_capture2(switch_core_session_t *session, switch_med
 		do_stop(session, MY_BUG_NAME);
 	}
 
-	switch_core_session_get_read_impl(session, &read_impl);
+	/* returns FALSE and zeroes read_impl when no codec is negotiated yet (e.g.
+	   an outbound leg ringing without early media) -- the strcasecmp below then
+	   dereferenced a NULL iananame and crashed the FS process */
+	if (switch_core_session_get_read_impl(session, &read_impl) != SWITCH_STATUS_SUCCESS || !read_impl.iananame) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+			"mod_google_transcribe: no read codec negotiated yet; try again after media is up\n");
+		return SWITCH_STATUS_FALSE;
+	}
 
 	if (switch_channel_pre_answer(channel) != SWITCH_STATUS_SUCCESS) {
 		return SWITCH_STATUS_FALSE;
@@ -298,7 +305,14 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 	  hints = var;
 	}
 
-	switch_core_session_get_read_impl(session, &read_impl);
+	/* same guard as start_capture2: get_read_impl zeroes read_impl and returns
+	   FALSE with no codec negotiated; the strcasecmp below dereferenced a NULL
+	   iananame */
+	if (switch_core_session_get_read_impl(session, &read_impl) != SWITCH_STATUS_SUCCESS || !read_impl.iananame) {
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+			"mod_google_transcribe: no read codec negotiated yet; try again after media is up\n");
+		return SWITCH_STATUS_FALSE;
+	}
 
 	if (switch_channel_pre_answer(channel) != SWITCH_STATUS_SUCCESS) {
 		return SWITCH_STATUS_FALSE;
