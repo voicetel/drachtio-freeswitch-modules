@@ -147,7 +147,10 @@ public:
 	}
 
 	void connect() {
-		if (m_connecting) return;
+		/* the worker no longer deletes this object on exit, so the media
+		   thread's VAD path can call connect() on a stream that already
+		   finished (AWS-side termination) -- never re-fire the async start */
+		if (m_connecting || m_finished) return;
 		m_connecting = true;
 
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer:connect %p connecting to aws speech..\n", this);
@@ -553,14 +556,17 @@ static void *SWITCH_THREAD_FUNC aws_transcribe_thread(switch_thread_t *thread, v
 	}
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcribe_thread: stopping cb %p\n", (void *) cb);
-	/* deleting here is safe even if the SDK's async task is still unwinding
-	   past our OnResponseCallback: ~TranscribeStreamingServiceClient ->
-	   ShutdownSdkClient waits for m_operationsProcessed==0 (the async op holds
-	   an RAIICounter through its full unwind) and then resets the executor,
-	   whose destructor joins any in-flight task thread (verified against
-	   aws-sdk-cpp source: AWSClientAsyncCRTP.h, DefaultExecutor.cpp). */
-	delete pStreamer;
-	cb->streamer.store(nullptr);
+	/* Do NOT delete the GStreamer here: this exit path runs without cb->mutex,
+	   while the media thread (aws_transcribe_frame) holds a locally cached
+	   cb->streamer across its drain loop under the trylock. Any AWS-initiated
+	   termination with no stop in flight (bad credentials, throttling, the
+	   4-hour stream limit) put the worker on this path while media frames keep
+	   arriving -- a use-after-free against the media thread, with the client
+	   destructor's ShutdownSdkClient/executor joins stretching the window to
+	   milliseconds. Leaving the object allocated is harmless: write() early-
+	   returns on m_finished and the VAD gate isConnecting() stays false, and
+	   killcb() (called under cb->mutex, after the join, from session_stop /
+	   session_cleanup) deletes it strictly serialized with media-thread use. */
 	return nullptr;
 }
 
@@ -833,10 +839,11 @@ extern "C" {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
 			"aws_transcribe_session_cleanup: tearing down orphaned cb %p (media bug never attached)\n", (void *) cb);
 
-		/* signal the worker thread to stop, then join it. The thread deletes the
-		   GStreamer and clears cb->streamer on exit. Flag first, then load: see
-		   aws_transcribe_session_stop. */
-		cb->stop_requested.store(1);
+	/* signal the worker thread to stop, then join it. The worker no longer
+	   deletes the GStreamer on exit (that raced the media thread); killcb
+	   below does it under cb->mutex. Flag first, then load: see
+	   aws_transcribe_session_stop. */
+	cb->stop_requested.store(1);
 		GStreamer* streamer = (GStreamer *) cb->streamer.load();
 		if (streamer) {
 			streamer->finish();
