@@ -134,6 +134,45 @@ caught, plus a crash-class teardown race in each of audio_fork and aws.
   duplicated `RECOGNIZER_VAD_VOICE_MS` read; the "Bug is not attached (race)"
   INFO that fired on every normal stop is now DEBUG.
 
+### mod_aws_transcribe
+- **Stop/hangup ABBA deadlock** — same class as audio_fork; the bug is now
+  removed after `cb->mutex` is released.
+- **The worker self-deleted the GStreamer under in-flight media-thread use** —
+  the exit path ran `delete` with no serialization against the frame callback,
+  which caches `cb->streamer` across its drain loop. Every AWS-initiated
+  termination (expired credentials, throttling, the 4-hour limit) with no
+  local stop rolled that UAF dice. The worker now just exits; `killcb()`
+  deletes under `cb->mutex` after the join, and `connect()` refuses to re-fire
+  on a finished stream.
+- **`start` on a codec-less session dereferenced a NULL `iananame`** — now
+  fails the start.
+- **Concurrent same-bugname `start`s orphaned a live worker + AWS stream** —
+  the hangup CLOSE resolved the session by name through the (overwritten)
+  channel private; it now stops its own bug's cb directly (the azure v0.7.0
+  pattern).
+- **VAD initialized mono on stereo captures** — the `27dd113` azure fix
+  ported: `switch_vad_init(sampleRate, cb->channels)`.
+- **Unload-gate counter lived in the GStreamer ctor/dtor** — a start racing
+  shutdown was invisible to the gate (worker-thread increment), and a throwing
+  ctor leaked the count and wedged all future unloads. The count is now taken
+  synchronously in `session_init` under a gate mutex (which also stops
+  accepting new sessions once shutdown begins) and released once per session
+  in `killcb`.
+- **The shutdown loop busy-spun once the deadline passed** — bounded with a
+  100ms `wait_for` per pass.
+- **`finish()` discarded up to ~10s of buffered audio before Close** — the
+  deque is now drained to the stream first (tail of the final transcript).
+- **Stereo without `AWS_ENABLE_CHANNEL_IDENTIFICATION` now warns at start**
+  instead of only failing asynchronously with AWS's BadRequestException.
+- Chore: dead `samples_per_second` parameter (the body re-derives the rate;
+  retires the .c-side g722 special-case), dead `Aws::String` locals and
+  `m_region`, the 16kHz 1:1 resampler, the dead init-failure branch, a log
+  typo.
+- README: documents the 4-hour stream limit, the stereo/channel-
+  identification requirement, the stop-time flush, and that
+  `end_of_transcript`/`no_audio_detected`/`max_duration_exceeded` are
+  reserved but never generated.
+
 ---
 
 ## v0.7.2 — 2026-09-28
