@@ -37,8 +37,7 @@ static void responseHandler(switch_core_session_t* session, const char* eventNam
 
 static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, switch_abc_type_t type)
 {
-	switch_core_session_t *session = switch_core_media_bug_get_session(bug);
-
+	/* (no session local: no arm needs it) */
 	switch (type) {
 	case SWITCH_ABC_TYPE_INIT:
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Got SWITCH_ABC_TYPE_INIT.\n");
@@ -77,7 +76,6 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 	switch_status_t status;
 	switch_codec_implementation_t read_impl = { 0 };
 	void *pUserData;
-	uint32_t samples_per_second;
 
 
 	if (switch_channel_get_private(channel, bugname)) {
@@ -86,10 +84,9 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 	}
 
 	/* returns FALSE and zeroes read_impl when no codec is negotiated yet (e.g.
-	   an outbound leg ringing without early media) -- the strcasecmp below then
-	   dereferenced a NULL iananame and crashed the FS process. google and aws
-	   had the guard in their glue (55ad536); it was missing here and at this
-	   .c call site. */
+	   an outbound leg ringing without early media) -- a strcasecmp on the NULL
+	   iananame here used to crash the FS process. google and aws had the guard
+	   in their glue (55ad536); it was missing here and at the glue boundary. */
 	if (switch_core_session_get_read_impl(session, &read_impl) != SWITCH_STATUS_SUCCESS || !read_impl.iananame) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
 			"mod_azure_transcribe: no read codec negotiated yet; try again after media is up\n");
@@ -100,10 +97,10 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 		return SWITCH_STATUS_FALSE;
 	}
 
-	samples_per_second = !strcasecmp(read_impl.iananame, "g722") ? read_impl.actual_samples_per_second : read_impl.samples_per_second;
-
-	if (SWITCH_STATUS_FALSE == azure_transcribe_session_init(session, responseHandler, 
-		samples_per_second, flags & SMBF_STEREO ? 2 : 1, lang, interim, bugname, &pUserData)) {
+	/* the glue re-derives the rate from the codec; the g722-aware value
+	   computed here fed a parameter the glue never used */
+	if (SWITCH_STATUS_FALSE == azure_transcribe_session_init(session, responseHandler,
+		flags & SMBF_STEREO ? 2 : 1, lang, interim, bugname, &pUserData)) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Error initializing azure speech session.\n");
 		return SWITCH_STATUS_FALSE;
 	}

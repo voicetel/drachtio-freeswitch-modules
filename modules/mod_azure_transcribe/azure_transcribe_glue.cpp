@@ -582,14 +582,13 @@ static void killcb(struct cap_cb* cb) {
 extern "C" {
 	switch_status_t azure_transcribe_init() {
 		const char* subscriptionKey = std::getenv("AZURE_SUBSCRIPTION_KEY");
-		const char* region = std::getenv("AZURE_REGION");
 		if (NULL == subscriptionKey) {
-			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, 
-				"\"AZURE_SUBSCRIPTION_KEY\"  env var not set; authentication will expect channel variables of same names to be set\n");
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE,
+				"\"AZURE_SUBSCRIPTION_KEY\"  and/or \"AZURE_REGION\" env var not set; authentication will expect channel variables of same names to be set\n");
 		}
 		return SWITCH_STATUS_SUCCESS;
 	}
-	
+
 	switch_status_t azure_transcribe_cleanup() {
 		return SWITCH_STATUS_SUCCESS;
 	}
@@ -659,10 +658,8 @@ extern "C" {
 		if (switch_mutex_init(&cb->mutex, SWITCH_MUTEX_NESTED, pool) != SWITCH_STATUS_SUCCESS) {
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error initializing mutex\n");
 			status = SWITCH_STATUS_FALSE;
-			goto done; 
+			goto done;
 		}
-
-		cb->interim = interim;
 
 		/* determine if we need to resample the audio to 16-bit 8khz */
 		if (sampleRate != 8000) {
@@ -743,7 +740,6 @@ extern "C" {
 
 		if (bug) {
 			struct cap_cb *cb = (struct cap_cb *) switch_core_media_bug_get_user_data(bug);
-			switch_status_t st;
 
 			// close connection and get final responses
 			switch_mutex_lock(cb->mutex);
