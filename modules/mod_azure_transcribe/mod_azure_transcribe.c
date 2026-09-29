@@ -14,6 +14,12 @@ SWITCH_MODULE_DEFINITION(mod_azure_transcribe, mod_azure_transcribe_load, mod_az
 
 static switch_status_t do_stop(switch_core_session_t *session, char* bugname);
 
+/* which event subclasses THIS module reserved at load (vs found already
+   reserved by a sibling -- the error subclass name is deliberately shared).
+   Only owned reservations are freed at unload. */
+#define N_RESERVED_SUBCLASSES 6
+static int g_reserved_subclasses[N_RESERVED_SUBCLASSES];
+
 static void responseHandler(switch_core_session_t* session, const char* eventName, const char * json, const char* bugname, int finished) {
 	switch_event_t *event = NULL;
 	switch_channel_t *channel = switch_core_session_get_channel(session);
@@ -237,18 +243,32 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_azure_transcribe_load)
 			TRANSCRIBE_EVENT_ERROR
 		};
 		size_t i;
+		if (sizeof(subclasses) / sizeof(subclasses[0]) != N_RESERVED_SUBCLASSES) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "subclass table size mismatch\n");
+			return SWITCH_STATUS_TERM;
+		}
 		for (i = 0; i < sizeof(subclasses) / sizeof(subclasses[0]); i++) {
-			if (switch_event_reserve_subclass(subclasses[i]) != SWITCH_STATUS_SUCCESS) {
+			switch_status_t st = switch_event_reserve_subclass(subclasses[i]);
+			if (st == SWITCH_STATUS_INUSE) {
+				/* already reserved by a sibling module (the error subclass name
+				   is shared by design) -- fine at runtime, but not ours to free
+				   at unload */
+				g_reserved_subclasses[i] = 0;
+				continue;
+			}
+			if (st != SWITCH_STATUS_SUCCESS) {
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", subclasses[i]);
 				/* FreeSWITCH does not call the shutdown hook for a failed load:
 				   anything already reserved stays reserved for the life of the
 				   process, and every subsequent load fails at this same spot
 				   until FS restarts. Release what we took. */
 				while (i-- > 0) {
-					switch_event_free_subclass(subclasses[i]);
+					if (g_reserved_subclasses[i]) switch_event_free_subclass(subclasses[i]);
+					g_reserved_subclasses[i] = 0;
 				}
 				return SWITCH_STATUS_TERM;
 			}
+			g_reserved_subclasses[i] = 1;
 		}
 	}
 
@@ -288,11 +308,24 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_azure_transcribe_shutdown)
 		return SWITCH_STATUS_FALSE;
 	}
 	azure_transcribe_cleanup();
-	switch_event_free_subclass(TRANSCRIBE_EVENT_RESULTS);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_START_OF_UTTERANCE);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_END_OF_UTTERANCE);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_NO_SPEECH_DETECTED);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_VAD_DETECTED);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_ERROR);
+	{
+		/* free only the subclasses this module reserved at load (the shared
+		   error name may belong to a sibling) */
+		static const char* subclasses[] = {
+			TRANSCRIBE_EVENT_RESULTS,
+			TRANSCRIBE_EVENT_START_OF_UTTERANCE,
+			TRANSCRIBE_EVENT_END_OF_UTTERANCE,
+			TRANSCRIBE_EVENT_NO_SPEECH_DETECTED,
+			TRANSCRIBE_EVENT_VAD_DETECTED,
+			TRANSCRIBE_EVENT_ERROR
+		};
+		size_t i;
+		for (i = 0; i < sizeof(subclasses) / sizeof(subclasses[0]); i++) {
+			if (g_reserved_subclasses[i]) {
+				switch_event_free_subclass(subclasses[i]);
+				g_reserved_subclasses[i] = 0;
+			}
+		}
+	}
 	return SWITCH_STATUS_SUCCESS;
 }

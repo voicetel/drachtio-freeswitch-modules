@@ -19,6 +19,12 @@ SWITCH_MODULE_DEFINITION(mod_google_transcribe, mod_transcribe_load, mod_transcr
 
 static switch_status_t do_stop(switch_core_session_t *session, char* bugname);
 
+/* which event subclasses THIS module reserved at load (vs found already
+   reserved by a sibling -- the error subclass name is deliberately shared).
+   Only owned reservations are freed at unload. */
+#define N_RESERVED_SUBCLASSES 9
+static int g_reserved_subclasses[N_RESERVED_SUBCLASSES];
+
 
 static void responseHandler(switch_core_session_t* session, const char * json, const char* bugname) {
 	switch_event_t *event = NULL;
@@ -503,39 +509,49 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_transcribe_load)
 {
 	switch_api_interface_t *api_interface;
 
-	/* create/register custom event message type */
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_RESULTS) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_RESULTS);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_END_OF_UTTERANCE) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_END_OF_UTTERANCE);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_START_OF_TRANSCRIPT) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_START_OF_TRANSCRIPT);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_END_OF_TRANSCRIPT) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_END_OF_TRANSCRIPT);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_NO_AUDIO_DETECTED) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
-		return SWITCH_STATUS_TERM;
-	}
-
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_PLAY_INTERRUPT) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_PLAY_INTERRUPT);
-		return SWITCH_STATUS_TERM;
-	}
-	if (switch_event_reserve_subclass(TRANSCRIBE_EVENT_VAD_DETECTED) != SWITCH_STATUS_SUCCESS) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", TRANSCRIBE_EVENT_VAD_DETECTED);
-		return SWITCH_STATUS_TERM;
+	/* create/register custom event message types.
+	   NB: TRANSCRIBE_EVENT_ERROR (jambonz_transcribe::error) is deliberately
+	   shared with the other transcribe modules (consumers key on it), so a
+	   sibling may already have reserved it -- INUSE is success, and only the
+	   module that actually reserved a name frees it at unload. The glue fires
+	   the error subclass (google_glue's in-band and Finish()-status paths) but
+	   it was never reserved here; add it. */
+	{
+		static const char* subclasses[] = {
+			TRANSCRIBE_EVENT_RESULTS,
+			TRANSCRIBE_EVENT_END_OF_UTTERANCE,
+			TRANSCRIBE_EVENT_START_OF_TRANSCRIPT,
+			TRANSCRIBE_EVENT_END_OF_TRANSCRIPT,
+			TRANSCRIBE_EVENT_NO_AUDIO_DETECTED,
+			TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED,
+			TRANSCRIBE_EVENT_PLAY_INTERRUPT,
+			TRANSCRIBE_EVENT_VAD_DETECTED,
+			TRANSCRIBE_EVENT_ERROR
+		};
+		size_t i;
+		if (sizeof(subclasses) / sizeof(subclasses[0]) != N_RESERVED_SUBCLASSES) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "subclass table size mismatch\n");
+			return SWITCH_STATUS_TERM;
+		}
+		for (i = 0; i < sizeof(subclasses) / sizeof(subclasses[0]); i++) {
+			switch_status_t st = switch_event_reserve_subclass(subclasses[i]);
+			if (st == SWITCH_STATUS_INUSE) {
+				g_reserved_subclasses[i] = 0;
+				continue;
+			}
+			if (st != SWITCH_STATUS_SUCCESS) {
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Couldn't register subclass %s!\n", subclasses[i]);
+				/* FreeSWITCH does not call the shutdown hook for a failed load:
+				   anything already reserved stays reserved for the life of the
+				   process. Release what we took (only what WE took). */
+				while (i-- > 0) {
+					if (g_reserved_subclasses[i]) switch_event_free_subclass(subclasses[i]);
+					g_reserved_subclasses[i] = 0;
+				}
+				return SWITCH_STATUS_TERM;
+			}
+			g_reserved_subclasses[i] = 1;
+		}
 	}
 
 	/* connect my internal structure to the blank pointer passed to me */
@@ -574,14 +590,28 @@ SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_transcribe_shutdown)
 	}
 
 	google_speech_cleanup();
-	switch_event_free_subclass(TRANSCRIBE_EVENT_RESULTS);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_END_OF_UTTERANCE);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_START_OF_TRANSCRIPT);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_END_OF_TRANSCRIPT);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_NO_AUDIO_DETECTED);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_PLAY_INTERRUPT);
-	switch_event_free_subclass(TRANSCRIBE_EVENT_VAD_DETECTED);
+	{
+		/* free only the subclasses this module reserved at load (the shared
+		   error name may belong to a sibling) */
+		static const char* subclasses[] = {
+			TRANSCRIBE_EVENT_RESULTS,
+			TRANSCRIBE_EVENT_END_OF_UTTERANCE,
+			TRANSCRIBE_EVENT_START_OF_TRANSCRIPT,
+			TRANSCRIBE_EVENT_END_OF_TRANSCRIPT,
+			TRANSCRIBE_EVENT_NO_AUDIO_DETECTED,
+			TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED,
+			TRANSCRIBE_EVENT_PLAY_INTERRUPT,
+			TRANSCRIBE_EVENT_VAD_DETECTED,
+			TRANSCRIBE_EVENT_ERROR
+		};
+		size_t i;
+		for (i = 0; i < sizeof(subclasses) / sizeof(subclasses[0]); i++) {
+			if (g_reserved_subclasses[i]) {
+				switch_event_free_subclass(subclasses[i]);
+				g_reserved_subclasses[i] = 0;
+			}
+		}
+	}
 	return SWITCH_STATUS_SUCCESS;
 }
 
