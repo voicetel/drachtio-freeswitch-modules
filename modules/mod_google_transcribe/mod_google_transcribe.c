@@ -386,6 +386,14 @@ SWITCH_STANDARD_API(transcribe2_function)
 				int punctuation      = !strcmp(argv[9], "true");  //punctuation
 				if (argc > 10) {
 					sample_rate = atol(argv[10]);
+					/* atol garbage is 0, and the value becomes speex's output rate:
+					   0 (or an absurd rate) is a resampler misconfig at best */
+					if (sample_rate < 4000 || sample_rate > 48000) {
+						switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+							"invalid sample-rate %s (need 4000..48000)\n", argv[10]);
+						switch_core_session_rwunlock(lsession);
+						goto done;
+					}
 				}
 				/* model (argv[11]) and enhanced (argv[12]) gated separately: the
 			   combined argc > 12 gate silently ignored a model supplied as the
