@@ -462,6 +462,23 @@ public:
 				/* load the atomic pointer once into a local before dereferencing */
 				AudioStream* pStream = m_pStream.load();
 				if (pStream) {
+					/* drain queued audio before closing: finish() makes write()
+					   return false and the wait predicate excludes m_deqAudio, so
+					   up to AWS_TRANSCRIBE_MAX_BUFFERED_FRAMES (~10s) of captured
+					   audio was previously discarded here -- the tail of the final
+					   transcript, worst exactly on congested networks. Swap out
+					   under the lock, write unlocked (the media thread no longer
+					   contends: write() early-returns on m_finishing). */
+					std::deque< Aws::Vector<unsigned char> > local;
+					local.swap(m_deqAudio);
+					lk.unlock();
+					while (!local.empty()) {
+						Aws::Vector<unsigned char>& bits = local.front();
+						Aws::TranscribeStreamingService::Model::AudioEvent event(std::move(bits));
+						pStream->WriteAudioEvent(event);
+						local.pop_front();
+					}
+					lk.lock();
 					pStream->flush();
 					pStream->Close();
 					m_pStream = nullptr;
