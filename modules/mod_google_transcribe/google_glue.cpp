@@ -805,9 +805,6 @@ extern "C" {
           if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_VOICE_MS"))) {
             voice_ms = atoi(var);
           }
-          if ((var = switch_channel_get_variable(channel, "RECOGNIZER_VAD_VOICE_MS"))) {
-            voice_ms = atoi(var);
-          }
           switch_vad_set_mode(cb->vad, mode);
           switch_vad_set_param(cb->vad, "silence_ms", silence_ms);
           switch_vad_set_param(cb->vad, "voice_ms", voice_ms);
@@ -973,7 +970,9 @@ extern "C" {
              would yield an endless supply of fill frames (the drain loop
              would never terminate). */
           switch_bool_t fill = switch_test_flag(bug, SMBF_STEREO) ? SWITCH_FALSE : SWITCH_TRUE;
-          while (streamer && switch_core_media_bug_read(bug, &frame, fill) == SWITCH_STATUS_SUCCESS && !switch_test_flag((&frame), SFF_CNG)) {
+          /* (the dead SFF_CNG test was dropped: media_bug_read zeroes
+             frame->flags on every call, so it could never be set) */
+          while (streamer && switch_core_media_bug_read(bug, &frame, fill) == SWITCH_STATUS_SUCCESS) {
             if (frame.datalen) {
               if (frame.channels == 2 && cb->dbg_audio_levels) {
                 /* debug: report each channel's peak level about once per
