@@ -70,6 +70,39 @@ caught, plus a crash-class teardown race in each of audio_fork and aws.
   dead null-check after `new`; NULL-`%s` log args; `-Wreorder` ctor init list;
   unused lws local.
 
+### mod_deepgram_transcribe
+- **Stop/hangup ABBA deadlock** — same class as audio_fork (mutex held across
+  `switch_core_media_bug_remove` vs hangup CLOSE under `bug_rwlock`); the bug
+  is now removed after the mutex is released.
+- **A second concurrent stop could clear a NEW session's private slot** —
+  `dg_transcribe_session_stop` cleared the `MY_BUG_NAME` private
+  unconditionally; a stop racing a stop+start cycle would orphan the new
+  session's stop path. The private is now re-verified under the lock (as
+  aws/azure already did).
+- **Stereo `media_bug_read` heap overflow on the non-resampled path** —
+  lineage copy of the audio_fork fix (the direct path is taken for stereo on
+  PCMU/PCMA, since the pipe always negotiates `sample_rate=8000`).
+- **`start` on a codec-less session dereferenced a NULL `iananame`**
+  (`switch_core_session_get_read_impl` zeroes the struct and returns FALSE
+  with no codec negotiated; the return was ignored) — now fails the start.
+- **Unload with live sessions destroyed the lws context under them** — same
+  gate as audio_fork: live-pipe counter, refuse unload while non-zero.
+- **Oversized single-frame inbound messages bypassed `MAX_RECV_BUF_SIZE`** —
+  lineage copy of the audio_fork fix.
+- **Most WS query parameters were interpolated unencoded** (tag, redact,
+  alternatives, endpointing, utterance_end_ms, vad_turnoff, model/tier/
+  version, diarize_version, lang) — a value containing `&`/`=`/space/`#`
+  silently corrupted the query. All values now go through the encoder.
+- **`start <lang> stereo` (without `interim`) silently ran mono** — the
+  optional tokens were strictly positional; they now parse in any order, and
+  `mono`/`final` are accepted as explicit defaults.
+- Chore: dead locals/fields/defines (including the `no_audio_detected` /
+  `vad_detected` event defines this module never fires), the metadata-send
+  C99 VLA (now a heap vector, parity with the audio_fork copy), the vestigial
+  `m_bugname` member and commented-out `deinitialize` wait loop in the pipe.
+- README: it documented named concurrent transcriptions (`stop [bugname]`);
+  the module supports exactly one per channel.
+
 ---
 
 ## v0.7.2 — 2026-09-28
