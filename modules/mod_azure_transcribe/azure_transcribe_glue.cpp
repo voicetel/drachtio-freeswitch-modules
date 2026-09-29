@@ -618,6 +618,14 @@ extern "C" {
 		int err;
 		switch_memory_pool_t *pool = switch_core_session_get_pool(session);
 		auto read_codec = switch_core_session_get_read_codec(session);
+		/* same guard as google/aws (55ad536): a codec-less session (outbound leg
+		   ringing without early media) made this deref NULL. The .c caller now
+		   checks first, but the glue is the module boundary -- keep both. */
+		if (!read_codec || !read_codec->implementation) {
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+				"azure_transcribe_session_init: no read codec/implementation available\n");
+			return SWITCH_STATUS_FALSE;
+		}
 		uint32_t sampleRate = read_codec->implementation->actual_samples_per_second;
 		const char* sessionId = switch_core_session_get_uuid(session);
 		struct cap_cb* cb = (struct cap_cb *) switch_core_session_alloc(session, sizeof(*cb));
