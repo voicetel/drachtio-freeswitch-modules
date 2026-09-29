@@ -15,10 +15,12 @@ Attaches media bug to channel and performs streaming recognize request.
 - `lang-code` - a valid Deepgram [language code](https://developers.deepgram.com/documentation/features/language/) that is supported for streaming transcription
 - `interim` - If the 'interim' keyword is present then both interim and final transcription results will be returned; otherwise only final transcriptions will be returned
 - `stereo` - If the 'stereo' keyword is present, both caller and callee audio are captured as a two-channel (stereo) stream; otherwise only the caller's audio is captured
-- `bugname` - optional name for the media bug (default: `deepgram_transcribe`); use the same name with `stop` to stop a specifically-named transcription
+- `bugname` - optional name carried on the `media-bugname` event header. Note the module attaches a single bug under a fixed internal name: only one transcription per channel, and `stop` stops it regardless of the name given here.
+
+The option keywords may be given in any order.
 
 ```
-uuid_deepgram_transcribe <uuid> stop [bugname]
+uuid_deepgram_transcribe <uuid> stop
 ```
 Stop transcription on the channel.
 
