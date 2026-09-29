@@ -708,6 +708,13 @@ extern "C" {
 		const char* awsSecretAccessKey = switch_channel_get_variable(channel, "AWS_SECRET_ACCESS_KEY");
 		const char* awsRegion = switch_channel_get_variable(channel, "AWS_REGION");
 		cb->channels = channels;
+		if (channels > 1 && !switch_channel_var_true(channel, "AWS_ENABLE_CHANNEL_IDENTIFICATION")) {
+			/* the request contract requires the flag with NumberOfChannels=2;
+			   AWS otherwise answers BadRequestException and the session produces
+			   nothing -- say so up front instead of failing asynchronously */
+			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+				"stereo capture without AWS_ENABLE_CHANNEL_IDENTIFICATION: AWS rejects NumberOfChannels=2 without it; set the variable or capture mono\n");
+		}
 		/* unload gate: killcb releases the count exactly once, on whichever
 		   teardown path runs (including the failure exits below); set it before
 		   the first failure exit so the done: path can account for it */
