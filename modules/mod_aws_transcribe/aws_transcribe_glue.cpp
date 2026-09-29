@@ -362,15 +362,20 @@ public:
 				   time: a fresh 10s window per wake would let a trickling
 				   connection push the abort arbitrarily far past the intended
 				   "10s after shutdown". */
-				if (!m_cond.wait_until(lk, m_shutdownDeadline, ready)) {
-					if (!requestAborted) {
-						requestAborted = true;
-						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
-							"GStreamer %p final response overdue 10s after shutdown; aborting in-flight request\n", this);
-						m_client->DisableRequestProcessing();
-					}
-					continue;
+			if (!m_cond.wait_until(lk, m_shutdownDeadline, ready)) {
+				if (!requestAborted) {
+					requestAborted = true;
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING,
+						"GStreamer %p final response overdue 10s after shutdown; aborting in-flight request\n", this);
+					m_client->DisableRequestProcessing();
 				}
+				/* wait_until against a deadline in the past returns immediately,
+				   so until the aborted outcome lands this loop spun at 100% CPU.
+				   The abort should deliver the outcome in milliseconds; bound
+				   each pass anyway so a violated SDK contract fails safe. */
+				m_cond.wait_for(lk, std::chrono::milliseconds(100), ready);
+				continue;
+			}
 			}
 			else {
 				m_cond.wait(lk, ready);
