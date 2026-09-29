@@ -15,6 +15,34 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## v0.8.2 — 2026-09-29
+
+- **mod_azure_transcribe did not compile.** v0.8.0's `chore(azure)`
+  (`4c8d240`) dropped the dead `samples_per_second` argument from the
+  `azure_transcribe_session_init` call site in `mod_azure_transcribe.c`, but
+  its scripted edit of the glue aborted on an unrelated pattern before
+  writing — leaving the declaration and definition still taking the
+  parameter. The call site and the signature disagreed, so the module did
+  not build against **any** FreeSWITCH (shipped in v0.8.0 and v0.8.1). The
+  header, definition and call site now agree.
+- This was masked on the review host because the syntax-check stub include
+  directory vanished mid-session and the warning filter also swallowed the
+  resulting fatal "header not found" error; the harness now fails loudly on
+  any `fatal error`. Caught by the layer-3 build (below).
+
+### Verification
+- **Compile/link:** all five modules' TUs compile clean against FS 1.10
+  headers (host checks); all five compile **and link** in the layer-3 build
+  against **FreeSWITCH 1.11.3** (the callBroadcast installer's current pin,
+  `FS_VERSION` default). `mod_google_transcribe`'s TU also compiles against
+  the real generated googleapis protos + gRPC headers.
+- **[unit]** `make -C tests` 9/9; `make -C tests sanitize` ASan/UBSan clean.
+- **[tsan]** `tests/soak` three consecutive full-matrix passes; `audio_pipe.cpp`
+  unchanged since those runs.
+- **Pending at tag time:** the FS 1.11.3 boot assert (`module_exists` ×5 +
+  API registration) is run immediately after this tag; the result lands in
+  the following commit. Not yet run against FS 1.10.12.
+
 ## v0.8.1 — 2026-09-29
 
 - **mod_google_transcribe did not compile against FreeSWITCH 1.11.** v0.8.0's
