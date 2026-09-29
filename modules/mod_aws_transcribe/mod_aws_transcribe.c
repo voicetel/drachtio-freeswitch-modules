@@ -85,8 +85,7 @@ static void responseHandler(switch_core_session_t* session, const char * json, c
 
 static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, switch_abc_type_t type)
 {
-	switch_core_session_t *session = switch_core_media_bug_get_session(bug);
-
+	/* (no session local: the CLOSE arm stops the bug's own cb directly) */
 	switch (type) {
 	case SWITCH_ABC_TYPE_INIT:
 			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "Got SWITCH_ABC_TYPE_INIT.\n");
