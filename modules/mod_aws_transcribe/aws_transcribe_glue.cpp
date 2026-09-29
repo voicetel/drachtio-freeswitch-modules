@@ -714,9 +714,13 @@ extern "C" {
 			}
 		}
 
-		// allocate vad if we are delaying connecting to the recognizer until we detect speech
-		if (switch_channel_var_true(channel, "START_RECOGNIZING_ON_VAD")) {
-			cb->vad = switch_vad_init(sampleRate, 1);
+	// allocate vad if we are delaying connecting to the recognizer until we detect speech
+	if (switch_channel_var_true(channel, "START_RECOGNIZING_ON_VAD")) {
+		/* channels, not 1: stereo captures feed interleaved stereo to
+		   switch_vad_process, and the energy path strides by vad->channels --
+		   initialized mono it analyzed an L/R-mixed stream covering half each
+		   frame's bytes (the azure v0.7.0 defect class) */
+		cb->vad = switch_vad_init(sampleRate, cb->channels);
 			if (cb->vad) {
 				const char* var;
 				int mode = 2;
