@@ -293,6 +293,13 @@ public:
 		auto onCanceled = [this, responseHandler](const SpeechRecognitionCanceledEventArgs& args) {
       if (m_finished) return;
 			m_canceled = true;
+			/* Canceled is terminal for continuous recognition: without
+			   m_finished the media thread kept resampling and pushing audio into
+			   the dead recognizer until hangup, and a post-cancel Write failure
+			   could emit a SECOND finished=true event. The following
+			   SessionStopped then early-returns on m_finished (its m_canceled
+			   duplicate-suppression is preserved as belt-and-braces). */
+			m_finished = true;
 			SessionLock lock(m_sessionId.c_str());
 			switch_core_session_t* psession = lock.get();
 			if (psession) {
