@@ -810,7 +810,19 @@ extern "C" {
 
       switch_threadattr_create(&thd_attr, pool);
       switch_threadattr_stacksize_set(thd_attr, SWITCH_THREAD_STACKSIZE);
-      switch_thread_create(&cb->thread, thd_attr, grpc_read_thread, cb, pool);
+      if (SWITCH_STATUS_SUCCESS != switch_thread_create(&cb->thread, thd_attr, grpc_read_thread, cb, pool)) {
+        /* unchecked before: on thread-create failure the streamer stayed
+           connected with no reader (responses accumulate, flow control stalls
+           the media thread's Write) until cleanup. No read thread exists to
+           join, so delete the streamer directly. */
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+          "%s: failed to create the gRPC read thread\n", switch_channel_get_name(channel));
+        GStreamer* s = (GStreamer*) cb->streamer.load();
+        if (s) { delete s; cb->streamer.store(NULL); }
+        if (cb->resampler) { speex_resampler_destroy(cb->resampler); cb->resampler = NULL; }
+        if (cb->vad) { switch_vad_destroy(&cb->vad); cb->vad = nullptr; }
+        return SWITCH_STATUS_FALSE;
+      }
 
       *ppUserData = cb;
       return SWITCH_STATUS_SUCCESS;
