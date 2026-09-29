@@ -173,6 +173,28 @@ caught, plus a crash-class teardown race in each of audio_fork and aws.
   `end_of_transcript`/`no_audio_detected`/`max_duration_exceeded` are
   reserved but never generated.
 
+### mod_azure_transcribe
+- **Stop/hangup ABBA deadlock** — same class as audio_fork; the bug is now
+  removed after `cb->mutex` is released.
+- **`start` on a codec-less session dereferenced a NULL `iananame`** — now
+  fails the start, and the glue boundary got the same guard google/aws had.
+- **`onCanceled` never set `m_finished`** — the media thread kept streaming
+  into the dead recognizer until hangup and a post-cancel write failure could
+  emit a second terminal event; the session now finishes on Cancel.
+- **VAD-path `connect()` could throw across the FS media thread**
+  (`StartContinuousRecognitionAsync` on an already-terminated recognizer →
+  `std::terminate`) — wrapped, and the failure now finishes the session with
+  the terminal error event; `connect()` also refuses to restart a finished
+  session.
+- **`start <lang> stereo` (without `interim`) silently ran mono** — the
+  option keywords now parse in any order (aws got the same fix).
+- Chore: dead cap_cb fields (`sessionId`/`lang`/`interim`), dead
+  `samples_per_second` parameters, unused locals, NULL-`%s` log in
+  `responseHandler`, dead init-failure branch.
+- README: stereo+VAD effectively monitors the caller channel (fvad is
+  mono-only) — documented as a known limitation rather than changing DSP
+  behavior without a live soak.
+
 ---
 
 ## v0.7.2 — 2026-09-28
