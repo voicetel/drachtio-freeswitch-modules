@@ -776,7 +776,20 @@ extern "C" {
       // allocate vad if we are delaying connecting to the recognizer until we detect speech
       if (switch_channel_var_true(channel, "START_RECOGNIZING_ON_VAD")) {
         cb->vad = switch_vad_init(sampleRate, channels);
-        if (cb->vad) {
+        if (!cb->vad) {
+          /* previously this fell through to the "no vad -> connect
+             immediately" path below: the operator's cost-saving config was
+             silently converted into streaming everything. Fail the start. */
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
+            "%s: START_RECOGNIZING_ON_VAD is set but switch_vad_init failed; refusing to start\n",
+            switch_channel_get_name(channel));
+          if (cb->resampler) {
+            speex_resampler_destroy(cb->resampler);
+            cb->resampler = NULL;
+          }
+          return SWITCH_STATUS_FALSE;
+        }
+        {
           const char* var;
           int mode = 2;
           int silence_ms = 150;
