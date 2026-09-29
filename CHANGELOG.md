@@ -15,11 +15,19 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
-## Unreleased
+## v0.8.0 — 2026-09-29
 
 Third full review of the maintained surface (all five modules), one commit per
 issue. Headline: a cross-module ABBA deadlock none of the prior reviews
 caught, plus a crash-class teardown race in each of audio_fork and aws.
+
+Consumer-visible changes: the `start` option keywords now parse in any order
+(deepgram/azure/aws — previously `start <lang> stereo` without `interim`
+silently ran mono); google stereo/`write` captures no longer stall on
+one-sided media; modules refuse to unload while sessions are active; aws
+flushes buffered audio before closing a stream; invalid audio_fork
+arguments now fail the command instead of starting a broken capture. Event
+names and JSON shapes are unchanged throughout.
 
 ### Cross-module
 - **The shared `jambonz_transcribe::error` subclass reservation broke
@@ -222,6 +230,29 @@ caught, plus a crash-class teardown race in each of audio_fork and aws.
 - README: stereo+VAD effectively monitors the caller channel (fvad is
   mono-only) — documented as a known limitation rather than changing DSP
   behavior without a live soak.
+
+### Verification
+- **[unit]** `make -C tests` 9/9; `make -C tests sanitize` ASan/UBSan clean.
+- **[tsan]** `tests/soak` full matrix (ASan/UBSan/LSan + TSan, both AudioPipe
+  lineages, 200 iters × 4 workers): **three consecutive OVERALL PASS runs** on
+  the release tree (160/200 `CONNECT_SUCCESS`, 200/200 reapers, no sanitizer
+  findings); baseline v0.7.2 also 2/2. The new first-fragment
+  `MAX_RECV_BUF_SIZE` cap is soak-exercised: the mock's single-frame 700KB
+  message hits it (~430 discards/run vs 0 on baseline), and the fragmented
+  200×4KB probe still exercises the realloc-branch cap (~430/run).
+  Disclosure, per the harness-honesty rules: one earlier full-matrix run of
+  this same tree flaked at 198/200 reapers in the audio_fork ASan variant
+  (no sanitizer finding; the release's audio_pipe.cpp changes touch only the
+  recv path and the ctor init list, not the close/promise path; not
+  reproduced in the three subsequent runs).
+- **Host compile checks** (not the full [build] badge): all five modules' FS
+  glue TUs compile warning-clean-against-baseline against FS 1.10.12 headers;
+  `google_glue.cpp` additionally compiled against the real generated
+  googleapis protos (pinned SHA, `tests/buildcheck`) + gRPC 1.51 headers. The
+  aws/azure vendor-SDK TUs remain compile-unverified here (no SDKs on this
+  host) — link/load in FreeSWITCH 1.10.12 stays a fleet step.
+- **Still unverified:** live-credential vendor streaming (all four), and the
+  FS glue under concurrent live calls (see `docs/TESTING.md`).
 
 ---
 
