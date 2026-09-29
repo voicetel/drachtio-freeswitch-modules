@@ -124,7 +124,6 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 	switch_status_t status;
 	switch_codec_implementation_t read_impl = { 0 };
 	void *pUserData;
-	uint32_t samples_per_second;
 
 	if (switch_channel_get_private(channel, bugname)) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "removing bug from previous transcribe\n");
@@ -132,8 +131,9 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 	}
 
 	/* returns FALSE and zeroes read_impl when no codec is negotiated yet (e.g.
-	   an outbound leg ringing without early media) -- the strcasecmp below then
-	   dereferenced a NULL iananame and crashed the FS process */
+	   an outbound leg ringing without early media); the glue re-derives the
+	   rate from the codec itself, so this is purely a presence check (a NULL
+	   iananame used to be strcasecmp'd here -- a whole-process crash) */
 	if (switch_core_session_get_read_impl(session, &read_impl) != SWITCH_STATUS_SUCCESS || !read_impl.iananame) {
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR,
 			"mod_aws_transcribe: no read codec negotiated yet; try again after media is up\n");
@@ -144,9 +144,7 @@ static switch_status_t start_capture(switch_core_session_t *session, switch_medi
 		return SWITCH_STATUS_FALSE;
 	}
 
-	samples_per_second = !strcasecmp(read_impl.iananame, "g722") ? read_impl.actual_samples_per_second : read_impl.samples_per_second;
-
-	if (SWITCH_STATUS_FALSE == aws_transcribe_session_init(session, responseHandler, samples_per_second, flags & SMBF_STEREO ? 2 : 1, lang, interim, bugname, &pUserData)) {
+	if (SWITCH_STATUS_FALSE == aws_transcribe_session_init(session, responseHandler, flags & SMBF_STEREO ? 2 : 1, lang, interim, bugname, &pUserData)) {
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Error initializing aws speech session.\n");
 		return SWITCH_STATUS_FALSE;
 	}
@@ -172,7 +170,7 @@ static switch_status_t do_stop(switch_core_session_t *session, char* bugname)
 	switch_media_bug_t *bug = switch_channel_get_private(channel, bugname);
 
 	if (bug) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "Received user command command to stop transcribe on %s.\n", bugname);
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "Received user command to stop transcribe on %s.\n", bugname);
 		status = aws_transcribe_session_stop(session, 0, bugname);
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "stopped transcribe.\n");
 	}
@@ -286,9 +284,9 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_aws_transcribe_load)
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "AWS Speech Transcription API loading..\n");
 
-  if (SWITCH_STATUS_FALSE == aws_transcribe_init()) {
-		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_CRIT, "Failed initializing aws speech interface\n");
-	}
+  /* aws_transcribe_init cannot fail (Aws::InitAPI has no failure return here),
+     so the old FAILURE branch was dead */
+  aws_transcribe_init();
 
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_NOTICE, "AWS Speech Transcription API successfully loaded\n");
 

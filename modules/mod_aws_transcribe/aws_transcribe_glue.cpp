@@ -93,8 +93,6 @@ public:
 			long v = atol(maxFramesEnv);
 			if (v > 0) m_maxBufferedFrames = (size_t) v;
 		}
-		Aws::String key(awsAccessKeyId);
-		Aws::String secret(awsSecretAccessKey);
 		Aws::Client::ClientConfiguration config;
 		if (region != nullptr && strlen(region) > 0) config.region = region;
 		char keySnippet[20];
@@ -515,7 +513,6 @@ public:
 private:
 	std::string m_sessionId;
 	std::string m_bugname;
-	std::string  m_region;
 	Aws::UniquePtr<TranscribeStreamingServiceClient> m_client;
 	/* written on the AWS SDK IO thread (OnStreamReady) and cleared on the worker
 	   thread; read/dereferenced on the worker thread. atomic so the pointer
@@ -671,8 +668,8 @@ extern "C" {
 	}
 
 	// start transcribe on a channel
-	switch_status_t aws_transcribe_session_init(switch_core_session_t *session, responseHandler_t responseHandler, 
-          uint32_t samples_per_second, uint32_t channels, char* lang, int interim, char* bugname, void **ppUserData
+	switch_status_t aws_transcribe_session_init(switch_core_session_t *session, responseHandler_t responseHandler,
+          uint32_t channels, char* lang, int interim, char* bugname, void **ppUserData
 	) {
 		switch_status_t status = SWITCH_STATUS_SUCCESS;
 		switch_channel_t *channel = switch_core_session_get_channel(session);
@@ -764,7 +761,10 @@ extern "C" {
 		cb->lang[MAX_LANG-1] = '\0';
 		cb->samples_per_second = sampleRate;
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "sample rate of rtp stream is %d\n", cb->samples_per_second);
-		if (sampleRate != 8000) {
+		/* 8kHz passes through at 8kHz; 16kHz needs no resampler (a 16k->16k
+		   speex instance is pure per-frame CPU); anything else resamples to
+		   16kHz for the request */
+		if (sampleRate != 8000 && sampleRate != 16000) {
 			/* channels, not 1: stereo capture (SMBF_STEREO) delivers interleaved
 			   2-channel frames and the frame path uses the interleaved API */
 			cb->resampler = speex_resampler_init(cb->channels, sampleRate, 16000, SWITCH_RESAMPLE_QUALITY, &err);
