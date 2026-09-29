@@ -341,7 +341,9 @@ public:
 	}
 
 	void connect() {
-		if (m_connecting) return;
+		/* never (re)start a finished session -- the VAD path can reach here
+		   after a Canceled already finished the recognizer */
+		if (m_connecting || m_finished) return;
 		m_connecting = true;
 
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer:connect %p connecting to azure speech..\n", this);
@@ -503,6 +505,14 @@ public:
 			free(jsonString);
 		}
 		cJSON_Delete(json);
+	}
+
+	/* mark the session finished and emit the terminal error event -- for
+	   failures surfaced by callers (the media thread's VAD-path connect)
+	   rather than by write() itself */
+	void fail(const char* what) {
+		m_finished = true;
+		notifyWriteFailure(what);
 	}
 
 	bool isConnecting() {
@@ -803,14 +813,29 @@ extern "C" {
 			if (streamer) {
 				while (switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS && !switch_test_flag((&frame), SFF_CNG)) {
 					if (frame.datalen) {
-						if (cb->vad && !streamer->isConnecting()) {
-							switch_vad_state_t state = switch_vad_process(cb->vad, (int16_t*) frame.data, frame.samples);
-							if (state == SWITCH_VAD_STATE_START_TALKING) {
-								switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "detected speech, connect to azure speech now\n");
+					if (cb->vad && !streamer->isConnecting()) {
+						switch_vad_state_t state = switch_vad_process(cb->vad, (int16_t*) frame.data, frame.samples);
+						if (state == SWITCH_VAD_STATE_START_TALKING) {
+							switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "detected speech, connect to azure speech now\n");
+							/* connect() runs on the FS media thread here and can throw
+							   synchronously (e.g. StartContinuousRecognitionAsync on a
+							   recognizer that already Canceled). An exception escaping
+							   into FS's C media-bug dispatcher is std::terminate -- a
+							   process crash. Fail the session with an event instead. */
+							try {
 								streamer->connect();
-								cb->responseHandler(session, TRANSCRIBE_EVENT_VAD_DETECTED, NULL, cb->bugname, 0);
+							} catch (const std::exception& e) {
+								switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR,
+									"azure_transcribe_frame: VAD-path connect threw: %s\n", e.what());
+								streamer->fail(e.what());
+								break;
+							} catch (...) {
+								streamer->fail("unknown exception on VAD-path connect");
+								break;
 							}
+							cb->responseHandler(session, TRANSCRIBE_EVENT_VAD_DETECTED, NULL, cb->bugname, 0);
 						}
+					}
 
 						if (cb->resampler) {
 							/* out[] is an array of int16 samples, so size it in sample units, not bytes.
