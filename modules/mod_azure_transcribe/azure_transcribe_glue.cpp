@@ -731,19 +731,30 @@ extern "C" {
 				switch_mutex_unlock(cb->mutex);
 				return SWITCH_STATUS_SUCCESS;
 			}
-			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "azure_transcribe_session_stop: locked session\n");
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "azure_transcribe_session_stop: locked session\n");
 
-			switch_channel_set_private(channel, bugname, NULL);
-			if (!channelIsClosing) switch_core_media_bug_remove(session, &bug);
+		switch_channel_set_private(channel, bugname, NULL);
 
-			GStreamer* streamer = (GStreamer *) cb->streamer;
-			if (streamer) reaper(cb);
-			killcb(cb);
-			switch_mutex_unlock(cb->mutex);
-			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "azure_transcribe_session_stop: unlocked session\n");
+		GStreamer* streamer = (GStreamer *) cb->streamer;
+		if (streamer) reaper(cb);
+		killcb(cb);
+		switch_mutex_unlock(cb->mutex);
+		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "azure_transcribe_session_stop: unlocked session\n");
 
-			return SWITCH_STATUS_SUCCESS;
-		}
+		/* switch_core_media_bug_remove must NOT be called with cb->mutex held:
+		   FS core's remove acquires session->bug_rwlock in write mode, while
+		   the hangup path (switch_core_media_bug_remove_all at session-thread
+		   exit) holds that same write lock across this module's CLOSE callback,
+		   which acquires cb->mutex (azure_transcribe_session_close) -- an ABBA
+		   deadlock (mutex -> bug_rwlock here, bug_rwlock -> mutex on hangup)
+		   on a stop-vs-hangup race: both threads wedge permanently. Removing
+		   after the unlock is safe: the recognizer is reaped and the private
+		   cleared, so azure_transcribe_frame no-ops and the CLOSE that remove
+		   fires synchronously reaps nothing twice. */
+		if (!channelIsClosing) switch_core_media_bug_remove(session, &bug);
+
+		return SWITCH_STATUS_SUCCESS;
+	}
 
 		switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "%s Bug is not attached.\n", switch_channel_get_name(channel));
 		return SWITCH_STATUS_FALSE;
