@@ -15,6 +15,18 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## v0.8.1 — 2026-09-29
+
+- **mod_google_transcribe did not compile against FreeSWITCH 1.11.** v0.8.0's
+  stereo `fill` choice read the flag with `switch_test_flag(bug, SMBF_STEREO)`,
+  which dereferences `switch_media_bug_t`. That struct is private to the core
+  (`include/private/switch_core_pvt.h`), so outside it the type is incomplete:
+  FS 1.11.3 fails with "invalid use of incomplete type 'switch_media_bug_t'".
+  The flag is now read with the public `switch_core_media_bug_test_flag`,
+  which exists in 1.10 and 1.11 alike. v0.8.0's compile check ran against
+  1.10.12 headers only. **[build]** against FS 1.11.3 on the callBroadcast
+  fleet.
+
 ## v0.8.0 — 2026-09-29
 
 Third full review of the maintained surface (all five modules), one commit per

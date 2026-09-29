@@ -974,7 +974,7 @@ extern "C" {
              Mono bugs keep fill=TRUE: with fill=FALSE an empty read buffer
              would yield an endless supply of fill frames (the drain loop
              would never terminate). */
-          switch_bool_t fill = switch_test_flag(bug, SMBF_STEREO) ? SWITCH_FALSE : SWITCH_TRUE;
+          switch_bool_t fill = switch_core_media_bug_test_flag(bug, SMBF_STEREO) ? SWITCH_FALSE : SWITCH_TRUE;
           /* (the dead SFF_CNG test was dropped: media_bug_read zeroes
              frame->flags on every call, so it could never be set) */
           while (streamer && switch_core_media_bug_read(bug, &frame, fill) == SWITCH_STATUS_SUCCESS) {
