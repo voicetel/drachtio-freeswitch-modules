@@ -835,36 +835,46 @@ extern "C" {
 
       if (bug) {
         struct cap_cb *cb = (struct cap_cb *) switch_core_media_bug_get_user_data(bug);
-        MutexLock cbLock(cb->mutex);  // unlocks on any exit from this scope
+        {
+          MutexLock cbLock(cb->mutex);  // unlocks on any exit from this scope
 
-        if (!switch_channel_get_private(channel, cb->bugname)) {
-          // The private is already gone: either a benign double-cleanup of THIS
-          // cb (streamer/thread already reaped -- reap_streamer is a no-op), or
-          // this cb LOST a start race (a second start under the same bugname
-          // overwrote the private) and nothing else will ever tear it down.
-          // Unconditionally skipping the join here orphaned the loser's read
-          // thread, which lives in the session pool and dereferenced freed
-          // memory after session destroy.
-          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_INFO, "%s Bug is not attached (race); reaping this bug's own resources.\n", switch_channel_get_name(channel));
+          if (!switch_channel_get_private(channel, cb->bugname)) {
+            // The private is already gone: either a benign double-cleanup of THIS
+            // cb (streamer/thread already reaped -- reap_streamer is a no-op), or
+            // this cb LOST a start race (a second start under the same bugname
+            // overwrote the private) and nothing else will ever tear it down.
+            // Unconditionally skipping the join here orphaned the loser's read
+            // thread, which lives in the session pool and dereferenced freed
+            // memory after session destroy.
+            switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "%s Bug is not attached (already cleaned up); reaping this bug's own resources.\n", switch_channel_get_name(channel));
+            reap_streamer(cb);
+            return SWITCH_STATUS_FALSE;
+          }
+          switch_channel_set_private(channel, cb->bugname, NULL);
+
+          // stop playback if available
+          if (cb->play_file == 1){
+            if (switch_channel_test_flag(channel, CF_BROADCAST)) {
+              switch_channel_stop_broadcast(channel);
+            } else {
+              switch_channel_set_flag_value(channel, CF_BREAK, 1);
+            }
+          }
+
+          // close connection and get final responses (writesDone + join read
+          // thread + delete streamer + free resampler/vad)
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "google_speech_session_cleanup: waiting for read thread to complete\n");
           reap_streamer(cb);
-          return SWITCH_STATUS_FALSE;
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "google_speech_session_cleanup: read thread completed\n");
         }
-        switch_channel_set_private(channel, cb->bugname, NULL);
-
-      // stop playback if available
-       if (cb->play_file == 1){ 
-          if (switch_channel_test_flag(channel, CF_BROADCAST)) {
-		        switch_channel_stop_broadcast(channel);
-	        } else {
-		        switch_channel_set_flag_value(channel, CF_BREAK, 1);
-        	}
-        }
-
-        // close connection and get final responses (writesDone + join read
-        // thread + delete streamer + free resampler/vad)
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "google_speech_session_cleanup: waiting for read thread to complete\n");
-        reap_streamer(cb);
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "google_speech_session_cleanup: read thread completed\n");
+        /* cb->mutex is released here, BEFORE the bug remove: remove acquires
+           session->bug_rwlock in write mode, while the hangup path
+           (switch_core_media_bug_remove_all at session-thread exit) holds that
+           same write lock across this CLOSE callback, which takes cb->mutex --
+           holding our mutex across remove is an ABBA deadlock on a
+           stop-vs-hangup race (both threads wedge permanently). With the
+           private cleared and the streamer reaped above, google_speech_frame
+           no-ops and the CLOSE that remove fires synchronously early-returns. */
 
         if (!channelIsClosing) {
           switch_core_media_bug_remove(session, &bug);
@@ -872,7 +882,6 @@ extern "C" {
 
 			  switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG, "google_speech_session_cleanup: Closed stream\n");
 
-			  // cbLock unlocks cb->mutex here at scope exit
 			  return SWITCH_STATUS_SUCCESS;
       }
 
