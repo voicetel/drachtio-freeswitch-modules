@@ -305,7 +305,9 @@ SWITCH_MODULE_LOAD_FUNCTION(mod_aws_transcribe_load)
   Macro expands to: switch_status_t mod_aws_transcribe_shutdown() */
 SWITCH_MODULE_SHUTDOWN_FUNCTION(mod_aws_transcribe_shutdown)
 {
-	int active = aws_transcribe_active_sessions();
+	/* stop accepting new sessions and read the count atomically with that
+	   decision, so a start racing the unload is either counted or refused */
+	int active = aws_transcribe_shutdown_begin();
 	if (active > 0) {
 		/* Refuse the unload: the per-session worker threads still own live
 		   TranscribeStreamingServiceClients, and Aws::ShutdownAPI below would

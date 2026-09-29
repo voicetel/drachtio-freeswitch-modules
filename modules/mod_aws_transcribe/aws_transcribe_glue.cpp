@@ -57,10 +57,16 @@ private:
 	switch_core_session_t* m_session;
 };
 
-/* number of live GStreamer instances; lets the module shutdown refuse
-   unload while transcription sessions are active, so Aws::ShutdownAPI
-   never runs the SDK's global teardown under live clients */
+/* live-session gate for unload: the module shutdown refuses to unload while
+   transcription sessions are active, so Aws::ShutdownAPI never runs the SDK's
+   global teardown under live clients. The count is taken at session_init
+   (synchronously with the API call, under g_gateMutex, so a start racing
+   shutdown is either counted or refused -- incrementing in the GStreamer
+   ctor made a session invisible until its worker happened to be scheduled,
+   and a throwing ctor leaked the count and wedged all future unloads). */
 static std::atomic<int> g_activeStreamers{0};
+static std::mutex g_gateMutex;
+static bool g_accepting = true;
 
 class GStreamer {
 public:
@@ -81,7 +87,6 @@ public:
 			/* prebuffer up to 15 chunks (CHUNKSIZE bytes for 8kHz, 2x for resampled 16kHz) until the stream is connected */
 			m_prebufChunkSize(CHUNKSIZE * (samples_per_second == 8000 ? 1 : 2)),
 			m_audioBuffer(CHUNKSIZE * (samples_per_second == 8000 ? 1 : 2), 15) {
-		g_activeStreamers++;
 		/* allow operators to tune the back-pressure buffer cap via env var */
 		const char* maxFramesEnv = std::getenv("AWS_TRANSCRIBE_MAX_BUFFERED_FRAMES");
 		if (maxFramesEnv != nullptr) {
@@ -254,7 +259,6 @@ public:
 
 
 	~GStreamer() {
-		g_activeStreamers--;
 		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::~GStreamer wrote %u packets %p\n", m_packets, this);
 	}
 
@@ -585,6 +589,13 @@ static void killcb(struct cap_cb* cb) {
 			switch_vad_destroy(&cb->vad);
 			cb->vad = nullptr;
 		}
+		/* unload gate, released exactly once per session: killcb runs on every
+		   teardown path (stop, CLOSE, orphan cleanup, thread-create failure)
+		   and is idempotent for the rest, so gate the decrement on the flag */
+		if (cb->gate_counted) {
+			cb->gate_counted = 0;
+			--g_activeStreamers;
+		}
 
 	}
 }
@@ -626,6 +637,17 @@ extern "C" {
 		return g_activeStreamers.load();
 	}
 
+	/* Shutdown-hook entry: stop accepting new sessions, THEN report the live
+	   count -- in that order, under g_gateMutex, so a session_init racing the
+	   unload is either counted before our read (and we refuse) or refused
+	   itself. Without this, a start that had not yet constructed its GStreamer
+	   was invisible to the gate and ShutdownAPI ran under it. */
+	int aws_transcribe_shutdown_begin() {
+		std::lock_guard<std::mutex> gate(g_gateMutex);
+		g_accepting = false;
+		return g_activeStreamers.load();
+	}
+
 	// start transcribe on a channel
 	switch_status_t aws_transcribe_session_init(switch_core_session_t *session, responseHandler_t responseHandler, 
           uint32_t samples_per_second, uint32_t channels, char* lang, int interim, char* bugname, void **ppUserData
@@ -644,6 +666,20 @@ extern "C" {
 		}
 		uint32_t sampleRate = read_codec->implementation->actual_samples_per_second;
 
+		/* unload gate: refuse new sessions once shutdown has started, else count
+		   this session before any resource is created. Under g_gateMutex vs the
+		   shutdown hook, so a start racing shutdown is either counted (and the
+		   unload refused) or refused itself. */
+		{
+			std::lock_guard<std::mutex> gate(g_gateMutex);
+			if (!g_accepting) {
+				switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_WARNING,
+					"mod_aws_transcribe is unloading; refusing to start\n");
+				return SWITCH_STATUS_FALSE;
+			}
+			++g_activeStreamers;
+		}
+
 		struct cap_cb* cb = (struct cap_cb *) switch_core_session_alloc(session, sizeof(*cb));
 		/* no memset here: switch_core_session_alloc already zeroes pool memory,
 		   and memset over the std::atomic members of cap_cb's C++ view is
@@ -653,6 +689,10 @@ extern "C" {
 		const char* awsSecretAccessKey = switch_channel_get_variable(channel, "AWS_SECRET_ACCESS_KEY");
 		const char* awsRegion = switch_channel_get_variable(channel, "AWS_REGION");
 		cb->channels = channels;
+		/* unload gate: killcb releases the count exactly once, on whichever
+		   teardown path runs (including the failure exits below); set it before
+		   the first failure exit so the done: path can account for it */
+		cb->gate_counted = 1;
 		LanguageCode code = LanguageCodeMapper::GetLanguageCodeForName(lang);
 		if(LanguageCode::NOT_SET == code) {
 			switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "invalid language code %s\n", lang);
@@ -761,8 +801,13 @@ extern "C" {
 		}
 
 		*ppUserData = cb;
-	
+
 	done:
+		/* failure exits that never reached a killcb still hold the gate count */
+		if (status != SWITCH_STATUS_SUCCESS && cb->gate_counted) {
+			cb->gate_counted = 0;
+			--g_activeStreamers;
+		}
 		return status;
 	}
 

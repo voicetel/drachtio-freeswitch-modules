@@ -83,6 +83,10 @@ struct cap_cb {
 #else
 	int stop_requested;
 #endif
+	/* unload-gate bookkeeping: set when the session counted itself in
+	   session_init; killcb releases the count exactly once. Plain int: only
+	   touched under cb->mutex or before the worker thread exists. */
+	int gate_counted;
 };
 
 #endif

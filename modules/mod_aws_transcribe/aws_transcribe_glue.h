@@ -18,5 +18,8 @@ void aws_transcribe_session_cleanup(void *pUserData);
 switch_bool_t aws_transcribe_frame(switch_media_bug_t *bug, void* user_data);
 /* live transcription session count; > 0 means unload must be refused */
 int aws_transcribe_active_sessions();
+/* shutdown-hook entry: stops accepting new sessions and returns the live
+   count atomically with that decision */
+int aws_transcribe_shutdown_begin();
 
 #endif
