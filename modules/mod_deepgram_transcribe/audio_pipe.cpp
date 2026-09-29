@@ -249,10 +249,14 @@ int AudioPipe::lws_callback(struct lws *wsi,
         {
           std::lock_guard<std::mutex> lk(ap->m_text_mutex);
           if (ap->m_metadata.length() > 0) {
-            uint8_t buf[ap->m_metadata.length() + LWS_PRE];
-            memcpy(buf + LWS_PRE, ap->m_metadata.c_str(), ap->m_metadata.length());
+            /* heap buffer, not a VLA: today the only metadata payload is the
+               fixed CloseStream literal, but a future caller-controlled
+               metadata write would be a stack smash (the audio_fork lineage
+               copy already uses a vector for its 8KB user metadata) */
+            std::vector<uint8_t> buf(ap->m_metadata.length() + LWS_PRE);
+            memcpy(buf.data() + LWS_PRE, ap->m_metadata.c_str(), ap->m_metadata.length());
             int n = ap->m_metadata.length();
-            int m = lws_write(wsi, buf + LWS_PRE, n, LWS_WRITE_TEXT);
+            int m = lws_write(wsi, buf.data() + LWS_PRE, n, LWS_WRITE_TEXT);
             ap->m_metadata.clear();
             if (m < n) {
               return -1;
