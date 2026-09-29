@@ -21,7 +21,6 @@ int AudioPipe::lws_callback(struct lws *wsi,
   struct AudioPipe::lws_per_vhost_data *vhd = 
     (struct AudioPipe::lws_per_vhost_data *) lws_protocol_vh_priv_get(lws_get_vhost(wsi), lws_get_protocol(wsi));
 
-  struct lws_vhost* vhost = lws_get_vhost(wsi);
   AudioPipe ** ppAp = (AudioPipe **) user;
 
   switch (reason) {
@@ -580,16 +579,7 @@ bool AudioPipe::deinitialize() {
     if (t.joinable()) t.join();
   }
   serviceThreads.clear();
-/*
-  do
-  {
-    lwsl_notice("waiting for pending connects to complete\n");
-  } while (pendingConnects.size() > 0);
-  do
-  {
-    lwsl_notice("waiting for disconnects to complete\n");
-  } while (pendingDisconnects.size() > 0);
-*/
+
   for (unsigned int i = 0; i < numContexts; i++)
   {
     lwsl_notice("AudioPipe::deinitialize destroying context %d of %d\n", i + 1, numContexts);
@@ -601,12 +591,13 @@ bool AudioPipe::deinitialize() {
 // instance members
 AudioPipe::AudioPipe(const char* uuid, const char* host, unsigned int port, const char* path,
   size_t bufLen, size_t minFreespace, const char* apiKey, notifyHandler_t callback) :
-  m_uuid(uuid), m_host(host), m_port(port), m_path(path), m_finished(false),
-  m_audio_buffer_min_freespace(minFreespace), m_audio_buffer_max_len(bufLen), m_gracefulShutdown(false),
-  m_audio_buffer_write_offset(LWS_PRE), m_recv_buf(nullptr), m_recv_buf_ptr(nullptr),
-  m_recv_buf_discarding(false),
-  m_state(LWS_CLIENT_IDLE), m_wsi(nullptr), m_vhd(nullptr), m_apiKey(apiKey), m_callback(callback),
-  m_closeSignaled(false) {
+  m_state(LWS_CLIENT_IDLE), m_uuid(uuid), m_host(host), m_port(port), m_path(path),
+  m_wsi(nullptr),
+  m_audio_buffer_max_len(bufLen), m_audio_buffer_write_offset(LWS_PRE),
+  m_audio_buffer_min_freespace(minFreespace),
+  m_recv_buf(nullptr), m_recv_buf_ptr(nullptr), m_recv_buf_discarding(false),
+  m_vhd(nullptr), m_callback(callback), m_apiKey(apiKey),
+  m_gracefulShutdown(false), m_finished(false), m_closeSignaled(false) {
 
   m_audio_buffer = new uint8_t[m_audio_buffer_max_len];
 }

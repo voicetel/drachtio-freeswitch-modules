@@ -156,7 +156,6 @@ private:
   /* cross-thread flags (written by reaper/finish, read by lws callbacks) */
   std::atomic<bool> m_gracefulShutdown;
   std::atomic<bool> m_finished;
-  std::string m_bugname;
   /* set-once guard so the close promise is fulfilled exactly once regardless of
      which terminal path (graceful close, far-end drop, or connect failure) runs */
   std::atomic<bool> m_closeSignaled;

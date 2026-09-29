@@ -8,14 +8,14 @@
 
 #define MY_BUG_NAME "deepgram_transcribe"
 #define TRANSCRIBE_EVENT_RESULTS "deepgram_transcribe::transcription"
-#define TRANSCRIBE_EVENT_NO_AUDIO_DETECTED "deepgram_transcribe::no_audio_detected"
-#define TRANSCRIBE_EVENT_VAD_DETECTED "deepgram_transcribe::vad_detected"
+/* NB: no_audio_detected / vad_detected events are defined by sibling modules
+   but this module never fires them; the defines were removed so nobody wires
+   a consumer to an event that cannot happen */
 #define TRANSCRIBE_EVENT_CONNECT_SUCCESS "deepgram_transcribe::connect"
 #define TRANSCRIBE_EVENT_CONNECT_FAIL    "deepgram_transcribe::connect_failed"
 #define TRANSCRIBE_EVENT_BUFFER_OVERRUN  "deepgram_transcribe::buffer_overrun"
 #define TRANSCRIBE_EVENT_DISCONNECT      "deepgram_transcribe::disconnect"
 
-#define MAX_LANG (12)
 #define MAX_SESSION_ID (256)
 #define MAX_WS_URL_LEN (512)
 #define MAX_PATH_LEN (4096)
@@ -46,7 +46,6 @@ struct private_data {
   SpeexResamplerState *resampler;
   responseHandler_t responseHandler;
   void *pAudioPipe;
-  int ws_state;
   char host[MAX_WS_URL_LEN];
   unsigned int port;
   char path[MAX_PATH_LEN];
@@ -55,7 +54,6 @@ struct private_data {
   int  channels;
   unsigned int id;
   int buffer_overrun_notified:1;
-  int is_finished:1;
 };
 
 typedef struct private_data private_t;

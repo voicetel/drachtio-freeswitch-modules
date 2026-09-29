@@ -52,7 +52,6 @@ namespace {
   static const char *requestedNumServiceThreads = std::getenv("MOD_AUDIO_FORK_SERVICE_THREADS");
   static unsigned int nServiceThreads = std::max(1, std::min(requestedNumServiceThreads ? ::atoi(requestedNumServiceThreads) : 1, 5));
   static std::atomic<unsigned int> idxCallCount{0};
-  static uint32_t playCount = 0;
 
   /* Live-pipe count for the unload gate: incremented when a session's
      AudioPipe is created and connected, decremented only when the last module
@@ -168,13 +167,6 @@ namespace {
           speex_resampler_destroy(tech_pvt->resampler);
           tech_pvt->resampler = NULL;
       }
-
-      /*
-      if (tech_pvt->vad) {
-        switch_vad_destroy(&tech_pvt->vad);
-        tech_pvt->vad = nullptr;
-      }
-      */
     }
   }
 
@@ -462,12 +454,10 @@ namespace {
       return SWITCH_STATUS_FALSE;
     }
 
-    deepgram::AudioPipe* ap = new deepgram::AudioPipe(tech_pvt->sessionId, tech_pvt->host, tech_pvt->port, tech_pvt->path, 
+    /* new throws on failure rather than returning null, so there is no null
+       check here (a failed allocation propagates as std::bad_alloc) */
+    deepgram::AudioPipe* ap = new deepgram::AudioPipe(tech_pvt->sessionId, tech_pvt->host, tech_pvt->port, tech_pvt->path,
       buflen, read_impl.decoded_bytes_per_packet, apiKey, eventCallback);
-    if (!ap) {
-      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_ERROR, "Error allocating AudioPipe\n");
-      return SWITCH_STATUS_FALSE;
-    }
 
     tech_pvt->pAudioPipe = static_cast<void *>(ap);
 
@@ -543,9 +533,7 @@ extern "C" {
   switch_status_t dg_transcribe_session_init(switch_core_session_t *session, 
     responseHandler_t responseHandler, uint32_t samples_per_second, uint32_t channels, 
     char* lang, int interim, char* bugname, void **ppUserData)
-  {    	
-    int err;
-
+  {
     // allocate per-session data structure
     private_t* tech_pvt = (private_t *) switch_core_session_alloc(session, sizeof(private_t));
     if (!tech_pvt) {
@@ -648,8 +636,6 @@ extern "C" {
 	
 	switch_bool_t dg_transcribe_frame(switch_core_session_t *session, switch_media_bug_t *bug) {
     private_t* tech_pvt = (private_t*) switch_core_media_bug_get_user_data(bug);
-    size_t inuse = 0;
-    char *p = (char *) "{\"msg\": \"buffer overrun\"}";
 
     if (!tech_pvt) return SWITCH_TRUE;
     
