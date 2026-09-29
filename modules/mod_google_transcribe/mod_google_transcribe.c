@@ -461,9 +461,12 @@ SWITCH_STANDARD_API(transcribe_function)
           flags |= SMBF_STEREO;
 				}
 				/* write: transcribe only the audio the channel sends. Captured as
-				   stereo, not as a write-only bug, so that frames keep arriving
-				   at the read cadence -- zero-filled -- while nothing is being
-				   sent, rather than stalling the stream until the next write. */
+				   stereo, not as a write-only bug; the frame callback reads such
+				   bugs with fill=SWITCH_FALSE so the silent direction is
+				   zero-filled and frames keep flowing on one-sided media
+				   (fill=SWITCH_TRUE returns no frame unless BOTH directions have
+				   a full frame buffered). Note the callback is read-driven: if
+				   the caller's RTP stops entirely, no frames arrive regardless. */
 				else if (argc > 4 && !strcmp(argv[4], "write")) {
           flags |= SMBF_WRITE_STREAM ;
           flags |= SMBF_STEREO;

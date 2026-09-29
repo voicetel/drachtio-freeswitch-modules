@@ -912,7 +912,18 @@ extern "C" {
           // could be stale/freed by a concurrent do_stop). Gating the loop on it
           // means a concurrent delete is observed as NULL -> no use-after-free.
           streamer = (GStreamer *) cb->streamer.load();
-          while (streamer && switch_core_media_bug_read(bug, &frame, SWITCH_TRUE) == SWITCH_STATUS_SUCCESS && !switch_test_flag((&frame), SFF_CNG)) {
+          /* fill=SWITCH_FALSE for stereo bugs: with fill=SWITCH_TRUE, FS
+             returns no frame at all when EITHER direction's buffer is empty
+             (verified in 1.10.12 switch_core_media_bug.c: "(fill &&
+             (fill_read || fill_write)) -> FALSE"), so one-sided media (the
+             other party silent / DTX) stalled the stream, buffered ~512KB
+             (MAX_BUG_BUFFER), then dropped audio. With fill=FALSE the silent
+             side is 0xFF-filled (digital silence) and the speaking side flows.
+             Mono bugs keep fill=TRUE: with fill=FALSE an empty read buffer
+             would yield an endless supply of fill frames (the drain loop
+             would never terminate). */
+          switch_bool_t fill = switch_test_flag(bug, SMBF_STEREO) ? SWITCH_FALSE : SWITCH_TRUE;
+          while (streamer && switch_core_media_bug_read(bug, &frame, fill) == SWITCH_STATUS_SUCCESS && !switch_test_flag((&frame), SFF_CNG)) {
             if (frame.datalen) {
               if (frame.channels == 2 && cb->dbg_audio_levels) {
                 /* debug: report each channel's peak level about once per
