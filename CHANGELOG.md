@@ -21,6 +21,34 @@ Third full review of the maintained surface (all five modules), one commit per
 issue. Headline: a cross-module ABBA deadlock none of the prior reviews
 caught, plus a crash-class teardown race in each of audio_fork and aws.
 
+### Cross-module
+- **The shared `jambonz_transcribe::error` subclass reservation broke
+  co-loading** — aws and azure both reserve it with fail-on-error and FS
+  returns `INUSE` on a duplicate, so since v0.7.0 the second of the two to
+  load failed entirely (the v0.7.0 release skipped the load gate, so this
+  shipped unnoticed). google fired the same subclass without ever reserving
+  it, and had no rollback on reserve failure. All three now treat `INUSE` as
+  success, track which reservations they own, and free only those at unload;
+  google also gains the rollback and the missing reservation. The subclass
+  names consumers see are unchanged.
+- **`start <lang> stereo` (without `interim`) silently ran mono in azure and
+  aws too** (deepgram fixed first in this series) — both now parse the option
+  keywords in any order.
+
+### Review notes (no code change)
+- The v0.7.0 azure changelog entry for `5df42d6` ("switch_separate_string
+  truncated channel variables in place") was based on a wrong premise:
+  `switch_channel_get_variable` is `get_variable_dup(…, SWITCH_TRUE, …)` and
+  returns a session-pool copy (verified against FS 1.10.9 and master), so the
+  in-place separation never touched channel storage. The fix is harmless
+  (one extra strdup); the described bug did not exist.
+- Deferred with rationale: azure's in-flight-SDK-callback UAF window
+  (speculative, SDK-semantics-dependent — a shared_ptr/weak_ptr rework of the
+  handler lifetime needs a live-credential soak before it can be verified);
+  the reaper `waitForClose()` having no timeout (bounded in practice by TCP
+  keepalive ~75s; a live-but-silent Deepgram/Azure peer would leak a thread
+  per call — acceptably improbable for a vendor TLS endpoint).
+
 ### mod_audio_fork
 - **Stop/hangup ABBA deadlock** — `fork_session_cleanup` held `tech_pvt->mutex`
   across `switch_core_media_bug_remove` (which takes `session->bug_rwlock` in
@@ -187,7 +215,7 @@ caught, plus a crash-class teardown race in each of audio_fork and aws.
   the terminal error event; `connect()` also refuses to restart a finished
   session.
 - **`start <lang> stereo` (without `interim`) silently ran mono** — the
-  option keywords now parse in any order (aws got the same fix).
+  option keywords now parse in any order.
 - Chore: dead cap_cb fields (`sessionId`/`lang`/`interim`), dead
   `samples_per_second` parameters, unused locals, NULL-`%s` log in
   `responseHandler`, dead init-failure branch.
