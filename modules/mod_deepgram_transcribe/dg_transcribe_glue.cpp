@@ -228,7 +228,7 @@ namespace {
          custom model overrides the generic model. */
       bool first = true;
       if (tier) {
-        oss << "tier=" << tier;
+        oss << "tier=" << encodeURIComponent(tier);
         first = false;
       }
       if (model && customModel) {
@@ -238,16 +238,16 @@ namespace {
       }
       const char* chosenModel = customModel ? customModel : model;
       if (chosenModel) {
-        oss << (first ? "" : "&") << "model=" << chosenModel;
+        oss << (first ? "" : "&") << "model=" << encodeURIComponent(chosenModel);
       }
     }
 
     if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_MODEL_VERSION"))) {
      oss <<  "&version=";
-     oss <<  var;
+     oss <<  encodeURIComponent(var);
     }
     oss <<  "&language=";
-    oss <<  language;
+    oss <<  encodeURIComponent(language);
 
     if (channels == 2) {
      oss <<  "&multichannel=true";
@@ -270,13 +270,13 @@ namespace {
     }
     if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_REDACT"))) {
      oss <<  "&redact=";
-     oss <<  var;
+     oss <<  encodeURIComponent(var);
     }
     if (switch_true(switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_DIARIZE"))) {
      oss <<  "&diarize=true";
       if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_DIARIZE_VERSION"))) {
        oss <<  "&diarize_version=";
-       oss <<  var;
+       oss <<  encodeURIComponent(var);
       }
     }
     if (switch_true(switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_NER"))) {
@@ -284,7 +284,7 @@ namespace {
     }
     if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_ALTERNATIVES"))) {
      oss <<  "&alternatives=";
-     oss <<  var;
+     oss <<  encodeURIComponent(var);
     }
     if (switch_true(switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_NUMERALS"))) {
      oss <<  "&numerals=true";
@@ -319,22 +319,22 @@ namespace {
 		}
     if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_TAG"))) {
      oss <<  "&tag=";
-     oss <<  var;
+     oss <<  encodeURIComponent(var);
     }
     if (interim) {
      oss <<  "&interim_results=true";
     }
     if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_ENDPOINTING"))) {
       oss <<  "&endpointing=";
-      oss <<  var;
+      oss <<  encodeURIComponent(var);
     }
     if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_UTTERANCE_END_MS"))) {
       oss <<  "&utterance_end_ms=";
-      oss <<  var;
+      oss <<  encodeURIComponent(var);
     }
     if ((var = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_VAD_TURNOFF"))) {
       oss <<  "&vad_turnoff=";
-      oss <<  var;
+      oss <<  encodeURIComponent(var);
     }
    oss <<  "&encoding=linear16";
    oss <<  "&sample_rate=8000";
