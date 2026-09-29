@@ -47,7 +47,7 @@ The following channel variables can be set to configure the Azure speech to text
 | AZURE_USE_OUTPUT_FORMAT_DETAILED | if set to true or 1, provide n-best and confidence levels | off |
 | AZURE_SERVICE_ENDPOINT_ID | custom speech model endpoint id | none |
 | AZURE_AUDIO_LOGGING | if set, sends an audio log to the service | off |
-| START_RECOGNIZING_ON_VAD | if set to 1 or true, do not begin streaming audio to Azure until voice activity is detected | off |
+| START_RECOGNIZING_ON_VAD | if set to 1 or true, do not begin streaming audio to Azure until voice activity is detected. On a **stereo** capture, note the VAD effectively monitors the read (caller) channel: FS's energy path strides per channel from the first, and the fvad path is mono-only — speech present only on the callee channel may not trigger the connect | off |
 | RECOGNIZER_VAD_MODE | An integer value 0-3 from less to more aggressive vad detection | 2 |
 | RECOGNIZER_VAD_SILENCE_MS | Milliseconds of silence before the VAD resets | 150 |
 | RECOGNIZER_VAD_VOICE_MS | Milliseconds of voice activity required to trigger the connection to Azure when START_RECOGNIZING_ON_VAD is set | 250 |
