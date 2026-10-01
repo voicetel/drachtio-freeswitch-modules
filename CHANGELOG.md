@@ -15,6 +15,24 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## v0.8.4 — 2026-10-01
+
+- **mod_google_transcribe dropped the post-hangup tail.** The grpc read
+  thread exited the moment the FS session lookup failed, losing the
+  interrupted final result that arrives after cleanup's WritesDone —
+  Twilio delivers it (live golden, callBroadcast #241). The thread now
+  keeps draining and fires every event session-less via
+  `google_fire_session_less` (Unique-ID + transcription-vendor +
+  media-bugname + body — the headers the ESL consumer reads); the
+  Finish()-status errors surface session-less too instead of being
+  skipped. **[build]** compiles against the deployed googleapis tree.
+- **mod_google_transcribe attaches the raw provider response.** Every
+  result event now carries the full StreamingRecognizeResponse serialized
+  with protobuf JSON under `provider_data`, which callBroadcast wraps as
+  TranscriptionProviderData when the document set enableProviderData —
+  Twilio forwards the provider message verbatim under a ProviderData
+  envelope (live capture 2026-10-01, callBroadcast #230). **[build]**
+
 ## v0.8.3 — 2026-10-01
 
 - **mod_aws_transcribe could kill the whole FreeSWITCH process.** A
