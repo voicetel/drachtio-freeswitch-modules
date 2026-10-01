@@ -12,10 +12,15 @@
 #include <string>
 #include <sstream>
 #include <deque>
+#include <functional>
+
+#include <pthread.h>
+#include <sched.h>
 
 #include <aws/core/Aws.h>
 #include <aws/core/auth/AWSCredentialsProvider.h>
 #include <aws/core/client/ClientConfiguration.h>
+#include <aws/core/client/DefaultRetryStrategy.h>
 #include <aws/core/utils/logging/DefaultLogSystem.h>
 #include <aws/core/utils/logging/AWSLogging.h>
 #include <aws/transcribestreaming/TranscribeStreamingServiceClient.h>
@@ -68,6 +73,31 @@ static std::atomic<int> g_activeStreamers{0};
 static std::mutex g_gateMutex;
 static bool g_accepting = true;
 
+/* Every SDK task thread runs SCHED_OTHER, whatever FreeSWITCH thread fired
+   the start. pthread_create defaults to PTHREAD_INHERIT_SCHED, so a thread
+   the SDK spawns from a FreeSWITCH media/session thread (SCHED_FIFO) inherits
+   real-time scheduling. A synchronous SDK call that spins without blocking
+   -- observed live 2026-10-01: the streaming start's curl path retrying a
+   failed lookup at 100% CPU -- then accrues unbounded RT CPU until the
+   kernel's RLIMIT_RTTIME (7s on the fleet's unit file) SIGKILLs the whole
+   FreeSWITCH process, silently (no OOM, no kill(2) sender). Resetting the
+   policy inside every executor task closes that path for any caller. */
+class OtherSchedExecutor : public Aws::Utils::Threading::Executor {
+protected:
+	bool SubmitToThread(std::function<void()>&& task) override {
+		try {
+			std::thread([](std::function<void()>&& fx) {
+				struct sched_param sp = {};
+				pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+				fx();
+			}, std::move(task)).detach();
+			return true;
+		} catch (...) {
+			return false;
+		}
+	}
+};
+
 class GStreamer {
 public:
 	GStreamer(
@@ -95,6 +125,16 @@ public:
 		}
 		Aws::Client::ClientConfiguration config;
 		if (region != nullptr && strlen(region) > 0) config.region = region;
+		/* never let the SDK's own threads run real-time (see OtherSchedExecutor) */
+		config.executor = Aws::MakeShared<OtherSchedExecutor>(ALLOC_TAG);
+		/* a failed start must surface as an error, not spin: no SDK-level
+		   retries (the module/call layer already decides what a failed engine
+		   means for the call). The retry loop's synchronous re-attempts were
+		   the observed RT CPU burn. */
+		config.retryStrategy = Aws::MakeShared<Aws::Client::DefaultRetryStrategy>(ALLOC_TAG, 0);
+		/* bound the connect phase too, so an unreachable endpoint degrades to
+		   a transcription error in seconds instead of a long busy wait */
+		config.connectTimeoutMs = 5000;
 		char keySnippet[20];
 
 		strncpy(keySnippet, awsAccessKeyId, 4);
@@ -553,6 +593,14 @@ private:
 static void *SWITCH_THREAD_FUNC aws_transcribe_thread(switch_thread_t *thread, void *obj) {
 	struct cap_cb *cb = (struct cap_cb *) obj;
 	bool ok = true;
+	/* this worker constructs the SDK client and fires the async start, so
+	   every thread the SDK creates inherits ITS scheduling: drop any
+	   real-time policy a media/session-thread caller passed down before any
+	   SDK object exists (belt-and-braces with OtherSchedExecutor) */
+	{
+		struct sched_param sp = {};
+		pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+	}
 	switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "transcribe_thread: starting cb %p\n", (void *) cb);
 	GStreamer* pStreamer = nullptr;
 	try {
