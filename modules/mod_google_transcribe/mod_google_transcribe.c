@@ -19,6 +19,31 @@ SWITCH_MODULE_DEFINITION(mod_google_transcribe, mod_transcribe_load, mod_transcr
 
 static switch_status_t do_stop(switch_core_session_t *session, char* bugname);
 
+/* google_fire_session_less fires one transcription CUSTOM event with the
+   headers set by hand instead of switch_channel_event_set_data. The grpc
+   read thread uses it for the post-hangup tail: after WritesDone the
+   server still streams the interrupted final result(s), but the FS
+   session is often already destroyed, so session_locate fails and there
+   is no channel to stamp. The ESL consumer (callBroadcast) routes these
+   events by Unique-ID and reads only transcription-vendor /
+   media-bugname / the body, so those four headers carry everything it
+   needs. subclass is one of the TRANSCRIBE_EVENT_* names (RESULTS for a
+   transcript JSON, ERROR for an error JSON, or a marker subclass whose
+   body is the marker string, mirroring responseHandler). */
+void google_fire_session_less(const char* sessionId, const char* subclass, const char* json, const char* bugname) {
+	switch_event_t *event = NULL;
+
+	if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, subclass) != SWITCH_STATUS_SUCCESS || !event) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "google_fire_session_less: failed to create event subclass %s\n", subclass);
+		return;
+	}
+	switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Unique-ID", sessionId);
+	switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "google");
+	if (bugname) switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "media-bugname", bugname);
+	switch_event_add_body(event, "%s", json);
+	switch_event_fire(&event);
+}
+
 /* which event subclasses THIS module reserved at load (vs found already
    reserved by a sibling -- the error subclass name is deliberately shared).
    Only owned reservations are freed at unload. */

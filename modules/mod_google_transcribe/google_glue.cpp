@@ -9,6 +9,7 @@
 #include <grpc++/grpc++.h>
 
 #include "google/cloud/speech/v1p1beta1/cloud_speech.grpc.pb.h"
+#include <google/protobuf/util/json_util.h>
 
 #include <switch_json.h>
 
@@ -508,21 +509,54 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
   while (streamer->read(&response)) {  // Returns false when no more to read.
     SessionLock sessionLock(cb->sessionId);
     switch_core_session_t* session = sessionLock.get();
+    /* The session is often already destroyed while the post-hangup tail is
+       still streaming in (after cleanup's WritesDone the server sends the
+       interrupted final result(s), but the FS session may be gone by then).
+       The results must still be delivered: fire them session-less
+       (google_fire_session_less sets the headers the ESL consumer reads)
+       and KEEP DRAINING -- exiting here is exactly how the interrupted
+       final was dropped (#241, live 2026-10-01: Twilio delivers it). */
     if (!session) {
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "grpc_read_thread: session %s is gone!\n", cb->sessionId) ;
-      return nullptr;
+      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "grpc_read_thread: session %s is gone; draining tail session-less\n", cb->sessionId) ;
     }
     auto speech_event_type = response.speech_event_type();
     if (cb->dbg_audio_levels) {
-      switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-        "grpc_read_thread: response results=%d speech_event_type=%d\n", response.results_size(), (int) speech_event_type);
+      if (session) {
+        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
+          "grpc_read_thread: response results=%d speech_event_type=%d\n", response.results_size(), (int) speech_event_type);
+      } else {
+        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
+          "grpc_read_thread: response results=%d speech_event_type=%d\n", response.results_size(), (int) speech_event_type);
+      }
       for (int r = 0; r < response.results_size(); ++r) {
         const auto& result = response.results(r);
-        switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
-          "grpc_read_thread: result %d channel_tag=%d is_final=%d alternatives=%d transcript_bytes=%zu\n",
-          r, result.channel_tag(), result.is_final() ? 1 : 0, result.alternatives_size(),
-          result.alternatives_size() > 0 ? result.alternatives(0).transcript().size() : (size_t) 0);
+        if (session) {
+          switch_log_printf(SWITCH_CHANNEL_SESSION_LOG(session), SWITCH_LOG_DEBUG,
+            "grpc_read_thread: result %d channel_tag=%d is_final=%d alternatives=%d transcript_bytes=%zu\n",
+            r, result.channel_tag(), result.is_final() ? 1 : 0, result.alternatives_size(),
+            result.alternatives_size() > 0 ? result.alternatives(0).transcript().size() : (size_t) 0);
+        } else {
+          switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG,
+            "grpc_read_thread: result %d channel_tag=%d is_final=%d alternatives=%d transcript_bytes=%zu\n",
+            r, result.channel_tag(), result.is_final() ? 1 : 0, result.alternatives_size(),
+            result.alternatives_size() > 0 ? result.alternatives(0).transcript().size() : (size_t) 0);
+        }
       }
+    }
+    /* The raw provider response, for TranscriptionProviderData: Twilio
+       forwards the provider's own message verbatim under a ProviderData
+       envelope when enableProviderData is set (live capture 2026-10-01,
+       callBroadcast #230). Serialize once per response and attach it to
+       every result event fired from it; the consumer decides whether to
+       emit it. always_print_primitive_fields matches the captured shape
+       (confidence 0.0 and speaker_label "" are present). */
+    std::string rawResponseJson;
+    {
+      google::protobuf::util::JsonPrintOptions printOptions;
+      printOptions.always_print_primitive_fields = true;
+      google::protobuf::util::Status jsonStatus =
+        google::protobuf::util::MessageToJsonString(response, &rawResponseJson, printOptions);
+      if (!jsonStatus.ok()) rawResponseJson.clear();
     }
     if (response.has_error()) {
       Status status = response.error();
@@ -535,13 +569,14 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
          crashed the read thread's caller chain; the Finish()-status error
          path below already guards the same call */
       if (jsonString) {
-        cb->responseHandler(session, jsonString, cb->bugname);
+        if (session) cb->responseHandler(session, jsonString, cb->bugname);
+        else google_fire_session_less(cb->sessionId, TRANSCRIBE_EVENT_ERROR, jsonString, cb->bugname);
         free(jsonString);
       }
       cJSON_Delete(json);
     }
-    
-    if (cb->play_file == 1){
+
+    if (cb->play_file == 1 && session){
       cb->responseHandler(session, "play_interrupt", cb->bugname);
     }
     
@@ -566,6 +601,15 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
       cJSON_AddItemToObject(jResult, "language_code", jLanguageCode);
       cJSON_AddItemToObject(jResult, "channel_tag", jChannelTag);
       cJSON_AddItemToObject(jResult, "result_end_time", jResultEndTime);
+
+      /* the raw provider response this result came from (see the
+         serialization above); a parse failure simply omits it */
+      if (!rawResponseJson.empty()) {
+        cJSON* jProviderData = cJSON_Parse(rawResponseJson.c_str());
+        if (jProviderData) {
+          cJSON_AddItemToObject(jResult, "provider_data", jProviderData);
+        }
+      }
 
       for (int a = 0; a < result.alternatives_size(); ++a) {
         const auto& alternative = result.alternatives(a);
@@ -607,7 +651,8 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
       char* json = cJSON_PrintUnformatted(jResult);
       /* responseHandler strcmp()s its json argument: skip on OOM (NULL) */
       if (json) {
-        cb->responseHandler(session, (const char *) json, cb->bugname);
+        if (session) cb->responseHandler(session, (const char *) json, cb->bugname);
+        else google_fire_session_less(cb->sessionId, TRANSCRIBE_EVENT_RESULTS, json, cb->bugname);
         free(json);
       }
 
@@ -618,7 +663,8 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
       // we only get this when we have requested it, and recognition stops after we get this
       switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "grpc_read_thread: got end_of_utterance\n") ;
       cb->got_end_of_utterance = 1;
-      cb->responseHandler(session, "end_of_utterance", cb->bugname);
+      if (session) cb->responseHandler(session, "end_of_utterance", cb->bugname);
+      else google_fire_session_less(cb->sessionId, TRANSCRIBE_EVENT_END_OF_UTTERANCE, "end_of_utterance", cb->bugname);
       if (cb->wants_single_utterance) {
         switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "grpc_read_thread: sending writesDone because we want only a single utterance\n") ;
         streamer->writesDone();
@@ -631,36 +677,40 @@ static void *SWITCH_THREAD_FUNC grpc_read_thread(switch_thread_t *thread, void *
   {
     SessionLock sessionLock(cb->sessionId);
     switch_core_session_t* session = sessionLock.get();
-    if (session) {
-      grpc::Status status = streamer->finish();
-      if (11 == status.error_code()) {
-        if (std::string::npos != status.error_message().find("Exceeded maximum allowed stream duration")) {
-          cb->responseHandler(session, "max_duration_exceeded", cb->bugname);
-        }
-        else {
-          cb->responseHandler(session, "no_audio", cb->bugname);
-        }
+    /* finish() (and its failure events) must run session-less too: a stream
+       that fails while the call is tearing down still owes the consumer its
+       error event. */
+    grpc::Status status = streamer->finish();
+    if (11 == status.error_code()) {
+      if (std::string::npos != status.error_message().find("Exceeded maximum allowed stream duration")) {
+        if (session) cb->responseHandler(session, "max_duration_exceeded", cb->bugname);
+        else google_fire_session_less(cb->sessionId, TRANSCRIBE_EVENT_MAX_DURATION_EXCEEDED, "max_duration_exceeded", cb->bugname);
       }
-      else if (!status.ok()) {
-        /* the RPC failure status (UNAUTHENTICATED, UNAVAILABLE,
-           INVALID_ARGUMENT, RESOURCE_EXHAUSTED, ...) arrives HERE, not as an
-           in-band response error -- previously only OUT_OF_RANGE was surfaced
-           and every other failure produced a DEBUG log and silence, leaving
-           the consumer waiting on a recognizer that was gone. Same event
-           shape as the in-band error path above. */
-        switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "grpc_read_thread: stream failed: %s (%d)\n", status.error_message().c_str(), status.error_code());
-        cJSON* json = cJSON_CreateObject();
-        cJSON_AddStringToObject(json, "type", "error");
-        cJSON_AddStringToObject(json, "error", status.error_message().c_str());
-        char* jsonString = cJSON_PrintUnformatted(json);
-        if (jsonString) {
-          cb->responseHandler(session, jsonString, cb->bugname);
-          free(jsonString);
-        }
-        cJSON_Delete(json);
+      else {
+        if (session) cb->responseHandler(session, "no_audio", cb->bugname);
+        else google_fire_session_less(cb->sessionId, TRANSCRIBE_EVENT_NO_AUDIO_DETECTED, "no_audio", cb->bugname);
       }
-      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "grpc_read_thread: finish() status %s (%d)\n", status.error_message().c_str(), status.error_code()) ;
     }
+    else if (!status.ok()) {
+      /* the RPC failure status (UNAUTHENTICATED, UNAVAILABLE,
+         INVALID_ARGUMENT, RESOURCE_EXHAUSTED, ...) arrives HERE, not as an
+         in-band response error -- previously only OUT_OF_RANGE was surfaced
+         and every other failure produced a DEBUG log and silence, leaving
+         the consumer waiting on a recognizer that was gone. Same event
+         shape as the in-band error path above. */
+      switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_WARNING, "grpc_read_thread: stream failed: %s (%d)\n", status.error_message().c_str(), status.error_code());
+      cJSON* json = cJSON_CreateObject();
+      cJSON_AddStringToObject(json, "type", "error");
+      cJSON_AddStringToObject(json, "error", status.error_message().c_str());
+      char* jsonString = cJSON_PrintUnformatted(json);
+      if (jsonString) {
+        if (session) cb->responseHandler(session, jsonString, cb->bugname);
+        else google_fire_session_less(cb->sessionId, TRANSCRIBE_EVENT_ERROR, jsonString, cb->bugname);
+        free(jsonString);
+      }
+      cJSON_Delete(json);
+    }
+    switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "grpc_read_thread: finish() status %s (%d)\n", status.error_message().c_str(), status.error_code()) ;
     // sessionLock releases the session read-lock here at scope exit
   }
   return nullptr;

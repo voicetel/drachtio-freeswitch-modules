@@ -27,6 +27,17 @@
    this is the exact worst-case bound (full rationale in mod_azure_transcribe.h) */
 #define MEDIA_BUG_FRAME_BUF_SIZE (2 * SWITCH_RECOMMENDED_BUFFER_SIZE)
 
+/* Session-less event firing for the post-hangup tail (implemented in
+   mod_google_transcribe.c, called from the grpc read thread in the glue):
+   subclass is a TRANSCRIBE_EVENT_* name, json the body. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+void google_fire_session_less(const char* sessionId, const char* subclass, const char* json, const char* bugname);
+#ifdef __cplusplus
+}
+#endif
+
 #if (defined(__cplusplus) && __cplusplus >= 201103L) || \
     (defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L)
 /* drift guard: the factor must stay >= the SMBF_STEREO write of 2x
