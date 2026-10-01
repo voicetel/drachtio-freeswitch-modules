@@ -15,6 +15,24 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## v0.8.3 — 2026-10-01
+
+- **mod_aws_transcribe could kill the whole FreeSWITCH process.** A
+  streaming start whose curl prelude spins (observed live: one FS thread
+  at 100% CPU from the moment the start fired) accrued >=7 s of
+  real-time CPU in an SDK task thread that inherited SCHED_FIFO from
+  its FreeSWITCH creator, and the kernel's RLIMIT_RTTIME then SIGKILLed
+  FreeSWITCH — silently, in every log. Every SDK task thread now resets
+  its own policy to SCHED_OTHER at entry (`OtherSchedExecutor`), the
+  worker does the same before any SDK object exists, SDK-level retries
+  are disabled (the retry loop was the observed burn), and the connect
+  phase is bounded to 5 s. A failed start degrades to the module's error
+  path instead of a node kill. The endpoint rules compiled into the
+  linked aws-sdk-cpp 1.11.902 build the correct
+  `transcribestreaming.{Region}.amazonaws.com` host, so no endpoint
+  override was needed. **[build]** compiles/links against the deployed
+  SDK tree; live-credentials verification pending (callBroadcast #249).
+
 ## v0.8.2 — 2026-09-29
 
 - **mod_azure_transcribe did not compile.** v0.8.0's `chore(azure)`
