@@ -455,35 +455,38 @@ public:
 				lk.unlock();
 
 				SessionLock psession(m_sessionId.c_str());
-				if (psession) {
-
-					//switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::got a transcript to send out %p\n", this);
-					bool isFinal = false;
-					/* build the transcript JSON via cJSON so transcript text is correctly escaped;
-					   shape is unchanged: [ {"is_final": <bool>, "alternatives": [ {"transcript": "<text>"} ]} ] */
-					cJSON* root = cJSON_CreateArray();
-					for (auto&& r : transcript.GetTranscript().GetResults()) {
-						if (!isFinal && !r.GetIsPartial()) isFinal = true;
-						cJSON* result = cJSON_CreateObject();
-						cJSON_AddBoolToObject(result, "is_final", r.GetIsPartial() ? false : true);
-						cJSON* alternatives = cJSON_AddArrayToObject(result, "alternatives");
-						for (auto&& alt : r.GetAlternatives()) {
-							cJSON* alternative = cJSON_CreateObject();
-							cJSON_AddStringToObject(alternative, "transcript", alt.GetTranscript().c_str());
-							cJSON_AddItemToArray(alternatives, alternative);
-						}
-						cJSON_AddItemToArray(root, result);
+				bool isFinal = false;
+				/* build the transcript JSON via cJSON so transcript text is correctly escaped;
+				   shape is unchanged: [ {"is_final": <bool>, "alternatives": [ {"transcript": "<text>"} ]} ] */
+				cJSON* root = cJSON_CreateArray();
+				for (auto&& r : transcript.GetTranscript().GetResults()) {
+					if (!isFinal && !r.GetIsPartial()) isFinal = true;
+					cJSON* result = cJSON_CreateObject();
+					cJSON_AddBoolToObject(result, "is_final", r.GetIsPartial() ? false : true);
+					cJSON* alternatives = cJSON_AddArrayToObject(result, "alternatives");
+					for (auto&& alt : r.GetAlternatives()) {
+						cJSON* alternative = cJSON_CreateObject();
+						cJSON_AddStringToObject(alternative, "transcript", alt.GetTranscript().c_str());
+						cJSON_AddItemToArray(alternatives, alternative);
 					}
-					char* jsonString = cJSON_PrintUnformatted(root);
-					if (jsonString && 0 != strcmp(jsonString, "[]") && (isFinal || m_interim)) {
-						switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::writing transcript %p: %s\n", this, jsonString);
-						m_responseHandler(psession.get(), jsonString, m_bugname.c_str());
-					}
-					if (jsonString) free(jsonString);
-					cJSON_Delete(root);
+					cJSON_AddItemToArray(root, result);
 				}
-				/* with the session gone there is no consumer; the local copy is
-				   simply dropped */
+				char* jsonString = cJSON_PrintUnformatted(root);
+				if (jsonString && 0 != strcmp(jsonString, "[]") && (isFinal || m_interim)) {
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::writing transcript %p: %s\n", this, jsonString);
+					if (psession) {
+						m_responseHandler(psession.get(), jsonString, m_bugname.c_str());
+					} else if (isFinal) {
+						/* the call ended mid-utterance and AWS still sent the
+						   final — deliver it session-less, the way ttsd's
+						   post-hangup flush and google's v0.8.4
+						   fire_session_less do (#241). Interims drop: only the
+						   final is worth resurrecting. */
+						aws_fire_session_less(m_sessionId.c_str(), jsonString, m_bugname.c_str());
+					}
+				}
+				if (jsonString) free(jsonString);
+				cJSON_Delete(root);
 				lk.lock();
 			}
 			if (m_finishing) {

@@ -89,4 +89,17 @@ struct cap_cb {
 	int gate_counted;
 };
 
+/* the session-less final-utterance fire (#241): a call that ends
+   mid-utterance still gets AWS's final response after the channel's
+   close; deliver it with only Unique-ID + vendor + media-bugname, the
+   headers the ESL consumer routes on. Defined in the .c, called from
+   the glue (.cpp) — so the declaration needs C linkage on the C++ side. */
+#ifdef __cplusplus
+extern "C" {
+#endif
+void aws_fire_session_less(const char* sessionId, const char* json, const char* bugname);
+#ifdef __cplusplus
+}
+#endif
+
 #endif

@@ -88,6 +88,26 @@ static void responseHandler(switch_core_session_t* session, const char * json, c
 	switch_event_fire(&event);
 }
 
+/* aws_fire_session_less fires a results event with no live session: a
+   call that ends mid-utterance gets AWS's final response after the
+   channel's close, and the session-locked delivery drops it (#241).
+   Mirrors google_fire_session_less (v0.8.4): the ESL consumer routes by
+   Unique-ID and reads only transcription-vendor / media-bugname / the
+   body, so those four headers carry everything it needs. */
+void aws_fire_session_less(const char* sessionId, const char* json, const char* bugname) {
+	switch_event_t *event = NULL;
+
+	if (switch_event_create_subclass(&event, SWITCH_EVENT_CUSTOM, TRANSCRIBE_EVENT_RESULTS) != SWITCH_STATUS_SUCCESS || !event) {
+		switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "aws_fire_session_less: failed to create event subclass %s\n", TRANSCRIBE_EVENT_RESULTS);
+		return;
+	}
+	switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "Unique-ID", sessionId);
+	switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "transcription-vendor", "aws");
+	if (bugname) switch_event_add_header_string(event, SWITCH_STACK_BOTTOM, "media-bugname", bugname);
+	switch_event_add_body(event, "%s", json);
+	switch_event_fire(&event);
+}
+
 
 static switch_bool_t capture_callback(switch_media_bug_t *bug, void *user_data, switch_abc_type_t type)
 {
