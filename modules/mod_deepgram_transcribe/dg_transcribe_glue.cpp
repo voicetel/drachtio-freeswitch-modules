@@ -300,6 +300,18 @@ namespace {
        oss <<  encodeURIComponent(phrases[i]);
       }
 		}
+		/* keyterm is nova-3's hint carrier (Deepgram: "Keyterm prompting is
+		   available for nova-3"; keywords is the pre-nova-3 one). One param
+		   per term, like keywords above. */
+		const char* keyterms = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_KEYTERMS");
+		if (keyterms) {
+			char *phrases[500] = { 0 };
+      int argc = switch_separate_string((char *)keyterms, ',', phrases, 500);
+      for (int i = 0; i < argc; i++) {
+       oss <<  "&keyterm=";
+       oss <<  encodeURIComponent(phrases[i]);
+      }
+		}
 		const char* replace = switch_channel_get_variable(channel, "DEEPGRAM_SPEECH_REPLACE");
 		if (replace) {
 			char *phrases[500] = { 0 };
