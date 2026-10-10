@@ -288,6 +288,15 @@ public:
 				m_finished = true;
 				m_cond.notify_one();
 			} else {
+				/* the outcome's own shape matters here too: an error outcome on the
+				   session-less path was invisible (#241's diagnosis) */
+				if (!outcome.IsSuccess()) {
+					const TranscribeStreamingServiceError& err = outcome.GetError();
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p session-less outcome ERROR %s : %s\n",
+						this, err.GetMessage().c_str(), err.GetExceptionName().c_str());
+				} else {
+					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p session-less outcome OK\n", this);
+				}
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer %p session is closed/hungup. Need to unblock thread.\n", this);
 				std::lock_guard<std::mutex> lk(m_mutex);
 				m_finished = true;
