@@ -151,12 +151,15 @@ public:
 	
     m_handler.SetTranscriptEventCallback([this](const TranscriptEvent& ev)
     {
-			SessionLock psession(m_sessionId.c_str());
-			if (psession) {
-				std::lock_guard<std::mutex> lk(m_mutex);
-				m_transcript = ev;
-				m_cond.notify_one();
-			}
+			/* Store unconditionally — never gate on the FS session. Post-hangup
+			   the SessionLock lookup fails, and the final TranscriptEvent that
+			   AWS delivers after the EOS Close was dropped right here: it never
+			   reached m_transcript, so the worker's session-less fire (#241) had
+			   nothing to fire. The worker decides session-alive vs session-less
+			   delivery; this callback only stores and wakes. */
+			std::lock_guard<std::mutex> lk(m_mutex);
+			m_transcript = ev;
+			m_cond.notify_one();
     });
 
 		// not worth resampling to 16k if we get 8k ulaw or alaw in..
@@ -420,8 +423,22 @@ public:
 			}
 
 
-			// terminal: the SDK delivered its final outcome; no callbacks remain in flight
-			if (m_finished) return;
+			// terminal: the SDK delivered its final outcome; no callbacks remain
+			// in flight. Deliver any transcript the outcome raced ahead of
+			// first — after the EOS Close, AWS's final TranscriptEvent and the
+			// stream-end outcome can land between the same wakeups, and
+			// returning here first dropped that final (#241).
+			if (m_finished) {
+				if (m_transcript.TranscriptHasBeenSet()) {
+					TranscriptEvent transcript = m_transcript;
+					TranscriptEvent empty;
+					m_transcript = empty;
+					lk.unlock();
+					deliverTranscript(transcript);
+					lk.lock();
+				}
+				return;
+			}
 			/* Never-connected AND not connecting (VAD armed, no speech seen):
 			   nothing is outstanding, safe to exit and let the caller delete this
 			   object. If a connect IS in flight (m_connecting) we must NOT return:
@@ -453,40 +470,7 @@ public:
 				TranscriptEvent empty;
 				m_transcript = empty;
 				lk.unlock();
-
-				SessionLock psession(m_sessionId.c_str());
-				bool isFinal = false;
-				/* build the transcript JSON via cJSON so transcript text is correctly escaped;
-				   shape is unchanged: [ {"is_final": <bool>, "alternatives": [ {"transcript": "<text>"} ]} ] */
-				cJSON* root = cJSON_CreateArray();
-				for (auto&& r : transcript.GetTranscript().GetResults()) {
-					if (!isFinal && !r.GetIsPartial()) isFinal = true;
-					cJSON* result = cJSON_CreateObject();
-					cJSON_AddBoolToObject(result, "is_final", r.GetIsPartial() ? false : true);
-					cJSON* alternatives = cJSON_AddArrayToObject(result, "alternatives");
-					for (auto&& alt : r.GetAlternatives()) {
-						cJSON* alternative = cJSON_CreateObject();
-						cJSON_AddStringToObject(alternative, "transcript", alt.GetTranscript().c_str());
-						cJSON_AddItemToArray(alternatives, alternative);
-					}
-					cJSON_AddItemToArray(root, result);
-				}
-				char* jsonString = cJSON_PrintUnformatted(root);
-				if (jsonString && 0 != strcmp(jsonString, "[]") && (isFinal || m_interim)) {
-					switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::writing transcript %p: %s\n", this, jsonString);
-					if (psession) {
-						m_responseHandler(psession.get(), jsonString, m_bugname.c_str());
-					} else if (isFinal) {
-						/* the call ended mid-utterance and AWS still sent the
-						   final — deliver it session-less, the way ttsd's
-						   post-hangup flush and google's v0.8.4
-						   fire_session_less do (#241). Interims drop: only the
-						   final is worth resurrecting. */
-						aws_fire_session_less(m_sessionId.c_str(), jsonString, m_bugname.c_str());
-					}
-				}
-				if (jsonString) free(jsonString);
-				cJSON_Delete(root);
+				deliverTranscript(transcript);
 				lk.lock();
 			}
 			if (m_finishing) {
@@ -547,6 +531,42 @@ public:
 				}
 			}
 		}
+	}
+
+	/* build the transcript JSON via cJSON so transcript text is correctly
+	   escaped; shape is unchanged:
+	   [ {"is_final": <bool>, "alternatives": [ {"transcript": "<text>"} ]} ].
+	   Delivers session-alive through the response handler, or session-less
+	   via aws_fire_session_less when the call ended mid-utterance and only
+	   the final remains worth resurrecting — interims drop (#241).
+	   Caller must NOT hold m_mutex (SessionLock + response handler order). */
+	void deliverTranscript(const TranscriptEvent& transcript) {
+		SessionLock psession(m_sessionId.c_str());
+		bool isFinal = false;
+		cJSON* root = cJSON_CreateArray();
+		for (auto&& r : transcript.GetTranscript().GetResults()) {
+			if (!isFinal && !r.GetIsPartial()) isFinal = true;
+			cJSON* result = cJSON_CreateObject();
+			cJSON_AddBoolToObject(result, "is_final", r.GetIsPartial() ? false : true);
+			cJSON* alternatives = cJSON_AddArrayToObject(result, "alternatives");
+			for (auto&& alt : r.GetAlternatives()) {
+				cJSON* alternative = cJSON_CreateObject();
+				cJSON_AddStringToObject(alternative, "transcript", alt.GetTranscript().c_str());
+				cJSON_AddItemToArray(alternatives, alternative);
+			}
+			cJSON_AddItemToArray(root, result);
+		}
+		char* jsonString = cJSON_PrintUnformatted(root);
+		if (jsonString && 0 != strcmp(jsonString, "[]") && (isFinal || m_interim)) {
+			switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_DEBUG, "GStreamer::writing transcript %p: %s\n", this, jsonString);
+			if (psession) {
+				m_responseHandler(psession.get(), jsonString, m_bugname.c_str());
+			} else if (isFinal) {
+				aws_fire_session_less(m_sessionId.c_str(), jsonString, m_bugname.c_str());
+			}
+		}
+		if (jsonString) free(jsonString);
+		cJSON_Delete(root);
 	}
 
 	bool isConnecting() {
