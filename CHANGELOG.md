@@ -15,6 +15,37 @@ live-credentials soak (see `docs/TESTING.md`).
 
 ---
 
+## v0.8.5 — 2026-10-10
+
+- **mod_deepgram_transcribe carries nova-3 hints.** `DEEPGRAM_SPEECH_KEYTERMS`
+  (comma list) is read from the channel and emitted as Deepgram `keyterm`
+  query params — nova-3's hint carrier (keywords remain nova-2-and-older's).
+  callBroadcast's `<Gather hints>` sets it when the tenant model is nova-3
+  (callBroadcast #231; Go side `661e329e`). **[build]** compiles against the
+  deployed FS 1.11.3 tree; live keyterm delivery verified by the
+  `gather-speech-deepgram` probe family once rolled.
+- **mod_aws_transcribe delivers the post-hangup final.** The interrupted
+  utterance's tail was lost three ways, fixed together (callBroadcast #241,
+  diagnosed live 2026-10-10 with syslog_debug captures):
+  1. the SDK's `SetTranscriptEventCallback` gated on the FS session, dropping
+     the final TranscriptEvent before it ever reached the worker — events are
+     now stored unconditionally and the worker decides session-alive vs
+     session-less delivery (`aws_fire_session_less`, mirroring google's
+     v0.8.4);
+  2. the worker's `m_finished` return ran before transcript delivery, so a
+     final racing the stream-end outcome was dropped — pending transcripts
+     are delivered first, and the duplicated delivery folded into
+     `deliverTranscript()`;
+  3. shutdown only flushed + half-closed the stream, and AWS completes the
+     RPC successfully WITHOUT finalizing the buffered audio (observed:
+     outcome OK 20 ms after Close, no TranscriptEvent) — EndOfStream is now
+     signalled the way the service reads it, an explicit empty `AudioEvent`
+     (a bare event frame). **[build]** + live-verified by
+     `transcription-engine-hangup-mid-utterance-aws` on the fleet: started →
+     content (Final=true, the tail) → stopped.
+- **mod_aws_transcribe logs the session-less outcome shape** (ok vs error) —
+  the else branch swallowed it, hiding why no final arrived.
+
 ## v0.8.4 — 2026-10-01
 
 - **mod_google_transcribe dropped the post-hangup tail.** The grpc read
