@@ -512,9 +512,17 @@ public:
 						pStream->WriteAudioEvent(event);
 						local.pop_front();
 					}
-					lk.lock();
+					/* AWS's EndOfStream is an explicit EMPTY AudioEvent:
+					   WriteAudioEvent with no chunk emits the bare event
+					   frame the service reads as EOS. A bare half-close
+					   (Close alone) completes the RPC WITHOUT finalizing
+					   the buffered audio — observed live 2026-10-10:
+					   outcome OK, no final TranscriptEvent, tail lost
+					   (callBroadcast #241). */
+					pStream->WriteAudioEvent(Aws::TranscribeStreamingService::Model::AudioEvent{});
 					pStream->flush();
 					pStream->Close();
+					lk.lock();
 					m_pStream = nullptr;
 				}
 			}
